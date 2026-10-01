@@ -1,0 +1,12 @@
+{
+  "id": "insert-date",
+  "name": "Insert Date",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Type ::date or ::time to insert the current date or time.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": [],
+  "min_app": "0.1.0"
+}

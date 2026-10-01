@@ -1,0 +1,13 @@
+{
+  "id": "http-probe",
+  "name": "HTTP probe",
+  "version": "1.0.0",
+  "author": "Hyprnotes tests",
+  "description": "Issues HTTP requests with a URL taken from storage-free command ids.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["network"],
+  "net_hosts": ["api.example.com", "cdn.example.org"],
+  "min_app": "0.1.0"
+}

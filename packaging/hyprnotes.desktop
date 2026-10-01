@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Hyprnotes
+GenericName=Notes
+Comment=Markdown notes and sticky notes for Hyprland
+Exec=hyprnotes --show-organizer
+Icon=hyprnotes
+Terminal=false
+Categories=Utility;TextEditor;Qt;
+Keywords=notes;markdown;sticky;
+StartupWMClass=hyprnotes
+Actions=NewNote;
+
+[Desktop Action NewNote]
+Name=New Note
+Exec=hyprnotes --new-note
+Icon=hyprnotes

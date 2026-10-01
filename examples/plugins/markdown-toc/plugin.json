@@ -1,0 +1,12 @@
+{
+  "id": "markdown-toc",
+  "name": "Markdown Table of Contents",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Inserts a linked table of contents built from the note's headings at the cursor.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["note.read", "note.edit", "ui"],
+  "min_app": "0.1.0"
+}

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Hyprnotes
+Comment=Start Hyprnotes in the background
+Exec=hyprnotes --background
+Terminal=false
+X-Hyprnotes-Managed=true

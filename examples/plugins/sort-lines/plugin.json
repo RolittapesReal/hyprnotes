@@ -1,0 +1,12 @@
+{
+  "id": "sort-lines",
+  "name": "Sort Lines",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Sorts the selected lines alphabetically, ascending or descending.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["note.read", "note.edit", "ui"],
+  "min_app": "0.1.0"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "snippets",
+  "name": "Snippets",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Expands typed triggers such as ::sig into text you define in the plugin settings.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": [],
+  "min_app": "0.1.0"
+}

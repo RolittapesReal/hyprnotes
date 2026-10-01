@@ -1,0 +1,11 @@
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Test)
+add_library(hn_theme STATIC theme.cpp theme_io.cpp icons.cpp config.cpp config.h)
+target_include_directories(hn_theme PUBLIC include ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hn_theme PUBLIC Qt6::Widgets Qt6::Svg Qt6::Core)
+
+foreach(t theme_io_test theme_test theme_config_test theme_preview_test)
+  add_executable(${t} ${CMAKE_SOURCE_DIR}/tests/unit/${t}.cpp)
+  target_link_libraries(${t} PRIVATE hn_theme Qt6::Test)
+  add_test(NAME ${t} COMMAND ${t})
+  set_tests_properties(${t} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()

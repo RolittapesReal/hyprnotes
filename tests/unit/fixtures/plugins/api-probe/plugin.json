@@ -1,0 +1,13 @@
+{
+  "id": "api-probe",
+  "name": "API probe",
+  "version": "1.0.0",
+  "author": "Hyprnotes tests",
+  "description": "Calls every hn.* API inside pcall and logs name|ok|error for each.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["note.read", "note.edit", "notes.read", "notes.write", "ui", "storage", "clipboard", "network", "theme"],
+  "net_hosts": ["api.example.com"],
+  "min_app": "0.1.0"
+}

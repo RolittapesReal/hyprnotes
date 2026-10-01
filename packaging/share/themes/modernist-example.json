@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "base": "modernist",
+  "light": {
+    "accent": "#1F4FB5",
+    "accentText": "#FFFFFF",
+    "baseSize": 15
+  },
+  "dark": {
+    "accent": "#6FA0FF",
+    "accentText": "#111111",
+    "noteAccent": ["#E5533D", "#4F7FD9", "#E8B923", "#4FA36A", "#3A3A38", "#D8D5CC"]
+  }
+}

@@ -1,0 +1,16 @@
+# build output and local evidence
+/build*/
+/.bench/
+/packaging/out/
+**/__pycache__/
+**/target/
+*.pkg.tar.zst
+*.hnplugin
+.cache/
+compile_commands.json
+
+# internal design specs, implementation plans and benchmark/evidence docs: kept locally, never published
+/docs/superpowers/
+/docs/benchmarks/
+/benchmarks/README.md
+/experiments/attached_sessions/README.md

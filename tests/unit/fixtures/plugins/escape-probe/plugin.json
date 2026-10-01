@@ -1,0 +1,12 @@
+{
+  "id": "escape-probe",
+  "name": "Escape probe",
+  "version": "1.0.0",
+  "author": "Hyprnotes tests",
+  "description": "Tries to reach io/os/files/bytecode and logs name|result for each attempt.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": [],
+  "min_app": "0.1.0"
+}

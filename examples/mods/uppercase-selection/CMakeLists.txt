@@ -1,0 +1,7 @@
+# Standalone build: cmake -S . -B build && cmake --build build   (only needs a C compiler and mod_api.h)
+cmake_minimum_required(VERSION 3.20)
+project(uppercase_selection C)
+set(HN_MOD_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/mods/include" CACHE PATH "dir containing hyprnotes/mod_api.h")
+add_library(uppercase_selection SHARED uppercase_selection.c)
+target_include_directories(uppercase_selection PRIVATE ${HN_MOD_INCLUDE})
+target_compile_options(uppercase_selection PRIVATE -Wall -Wextra -Wpedantic)

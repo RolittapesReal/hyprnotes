@@ -1,0 +1,11 @@
+{
+  "id": "uppercase-selection",
+  "name": "Uppercase selection",
+  "version": "1.0.0",
+  "host_api_version": 1,
+  "arch": "x86_64",
+  "library": "libuppercase_selection.so",
+  "entry": "hn_mod_entry",
+  "activation": ["on-command:uppercase-selection"],
+  "commands": [{"id": "uppercase-selection", "title": "Uppercase selection"}]
+}

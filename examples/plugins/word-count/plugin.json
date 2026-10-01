@@ -1,0 +1,12 @@
+{
+  "id": "word-count",
+  "name": "Word Count",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Counts words, characters and lines in the selection (or the whole note) and shows the result as a notification.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["note.read", "ui"],
+  "min_app": "0.1.0"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "title-case-selection",
+  "name": "Title Case Selection",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Converts the selected text to Title Case, keeping small words like 'of' and 'the' lower case.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["note.read", "note.edit", "ui"],
+  "min_app": "0.1.0"
+}

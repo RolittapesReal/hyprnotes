@@ -1,0 +1,12 @@
+{
+  "id": "daily-note",
+  "name": "Daily Note",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Creates today's note (daily/YYYY-MM-DD.md) from a template if it does not exist yet.",
+  "api": 1,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["notes.read", "notes.write", "ui"],
+  "min_app": "0.1.0"
+}
