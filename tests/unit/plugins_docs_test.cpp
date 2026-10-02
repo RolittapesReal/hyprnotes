@@ -52,7 +52,7 @@ class DocsTest : public QObject {
     Q_OBJECT
 private slots:
     void everyLuaBlockRunsAsAPlugin() {
-        int n = 0, commands = 0, triggers = 0, events = 0;
+        int n = 0, commands = 0, triggers = 0, events = 0, apiTwo = 0, panels = 0, completions = 0, links = 0;
         for (const QString &doc : {"plugins.md", "plugin-api.md"}) {
             for (const auto &f : fences(doc)) {
                 if (f.lang != "lua") continue;
@@ -67,7 +67,9 @@ private slots:
                 Rig r;
                 const QString id = QString("doc-%1").arg(++n);
                 QString err;
-                QVERIFY2(r.addLua(id, perms, f.body.toUtf8(), hosts, &err), qPrintable(where + ": load failed: " + err));
+                const int api = attr(f.attrs, "api") == "2" ? 2 : 1;
+                QVERIFY2(r.addLua(id, perms, f.body.toUtf8(), hosts, &err, api), qPrintable(where + ": load failed: " + err));
+                if (api == 2) ++apiTwo;
                 const auto *regs = r.mgr->registry()->of(id);
                 QVERIFY2(regs, qPrintable(where));
                 for (const auto &c : regs->commands) { QVERIFY2(r.mgr->runCommand(c.qualifiedId(), &r.note, &err), qPrintable(where + ": command " + c.id + ": " + err)); ++commands; }
@@ -78,7 +80,26 @@ private slots:
                     QVERIFY2(m && m->pluginId == id, qPrintable(where + ": trigger " + t.pattern + " produced nothing"));
                     ++triggers;
                 }
+                for (const auto &pr : regs->panels) {  // API 2: render, then click everything clickable
+                    QList<PanelBlock> blocks;
+                    QVERIFY2(r.mgr->renderPanel(id, pr.id, &r.note, &blocks, &err), qPrintable(where + ": panel " + pr.id + ": " + err));
+                    QList<int> tokens;
+                    for (const auto &b : blocks) { if (b.click) tokens << b.click; for (const auto &it : b.items) if (it.click) tokens << it.click; }
+                    for (int t : tokens) QVERIFY2(r.mgr->panelClick(id, pr.id, t, &r.note, &err), qPrintable(where + ": click: " + err));
+                    ++panels;
+                }
+                for (const auto &c : regs->completions) {
+                    QString msg;
+                    QVERIFY2(!r.mgr->complete(c.trigger, "a", &r.note).isEmpty(), qPrintable(where + ": completion " + c.id + " returned nothing"));
+                    ++completions;
+                }
+                if (!regs->linkHandlers.isEmpty()) {
+                    QVERIFY2(r.mgr->activateLink({"link", "b", "", "", "b.md"}, &r.note), qPrintable(where + ": link handler did not consume the link"));
+                    QVERIFY2(!r.lib.opened.isEmpty(), qPrintable(where));
+                    ++links;
+                }
                 for (const auto &e : regs->events) {
+                    if (e == "link.activate") continue;  // delivered with a table, covered above
                     if (e == "note.pre_save") { r.mgr->preSave("some text with trailing spaces  \n", &r.note); }
                     else if (e == "app.started") r.mgr->appStarted();
                     else { r.mgr->post(e, "notes/a.md", &r.note); r.mgr->flushEvents(); }
@@ -91,7 +112,8 @@ private slots:
             }
         }
         qInfo().noquote() << QString("docs: %1 Lua code blocks ran as plugins (%2 commands, %3 triggers, %4 event handlers invoked), no failures, no permission denials").arg(n).arg(commands).arg(triggers).arg(events);
-        QVERIFY(n >= 35);
+        qInfo().noquote() << QString("docs: %1 of them are API 2 blocks (%2 panels rendered+clicked, %3 completions requested, %4 link handlers activated)").arg(apiTwo).arg(panels).arg(completions).arg(links);
+        QVERIFY(n >= 45 && apiTwo >= 12 && panels >= 3 && completions >= 1 && links >= 1);
     }
 
     void jsonBlocksAreValidAndManifestsParse() {
@@ -117,9 +139,8 @@ private slots:
     }
 
     void apiReferenceCoversExactlyTheRealApi() {
-        Rig r;
-        QVERIFY(r.addLua("walk", {}, R"LUA(
-hn.command{id = 'c', title = 'C', run = function()
+        const QByteArray walker = R"LUA(
+hn.command{ id = 'c', title = 'C', run = function()
   local names = {}
   local function walk(prefix, t)
     for k, v in pairs(t) do
@@ -131,23 +152,32 @@ hn.command{id = 'c', title = 'C', run = function()
   table.sort(names)
   hn.log(table.concat(names, ','))
 end }
-)LUA"));
-        QVERIFY(r.mgr->runCommand("walk:c", &r.note));
-        const QStringList realList = r.logsOf("walk").value(0).split(',');
-        const QSet<QString> real(realList.begin(), realList.end());
-        QCOMPARE(int(real.size()), 37);
+)LUA";
+        auto realNames = [&](int api) {
+            Rig r;
+            const QString id = api == 2 ? "walk2" : "walk";
+            [&] { QVERIFY(r.addLua(id, {}, walker, {}, nullptr, api)); }();
+            [&] { QVERIFY(r.mgr->runCommand(id + ":c", &r.note)); }();
+            const QStringList l = r.logsOf(id).value(0).split(',');
+            return QSet<QString>(l.begin(), l.end());
+        };
+        const QSet<QString> real1 = realNames(1), real2 = realNames(2);
+        QCOMPARE(int(real1.size()), 37);                 // an api-1 plugin sees exactly the original surface
+        QCOMPARE(int(real2.size()), 37 + 11);            // api 2 adds: 7 hn.notes.*, panel, panel_refresh, complete, link_handler
+        QVERIFY(real2.contains("hn.notes.query") && !real1.contains("hn.notes.query"));
+        for (const auto &n : real1) QVERIFY2(real2.contains(n), qPrintable(n));
         QSet<QString> documented;
         static const QRegularExpression head(QStringLiteral("^### (hn\\.[A-Za-z_.]+)"));
         for (const auto &line : readText(docPath("plugin-api.md")).split('\n'))
             if (const auto m = head.match(line); m.hasMatch()) documented.insert(m.captured(1));
         QStringList missing, stale;
-        for (const auto &n : real) if (!documented.contains(n)) missing << n;
-        for (const auto &n : documented) if (!real.contains(n)) stale << n;
+        for (const auto &n : real2) if (!documented.contains(n)) missing << n;
+        for (const auto &n : documented) if (!real2.contains(n)) stale << n;
         missing.sort();
         stale.sort();
         QVERIFY2(missing.isEmpty(), qPrintable("not documented in plugin-api.md: " + missing.join(", ")));
         QVERIFY2(stale.isEmpty(), qPrintable("documented but not in the runtime: " + stale.join(", ")));
-        qInfo().noquote() << QString("docs: plugin-api.md documents all %1 hn.* entries the sandbox exposes, and nothing else").arg(real.size());
+        qInfo().noquote() << QString("docs: plugin-api.md documents all %1 hn.* entries an API-2 plugin sees (%2 of them for API 1), and nothing else").arg(real2.size()).arg(real1.size());
     }
 
     void permissionTableAndWarningsMatchTheImplementation() {
@@ -169,7 +199,10 @@ end }
         const QString api = readText(docPath("plugin-api.md"));
         HostEnv env;
         for (const auto &s : {QString("events %1 ms").arg(env.eventMs), QString("commands %1 s").arg(env.commandMs / 1000), QString("`note.pre_save` %1 ms").arg(env.preSaveMs),
-                              QString("triggers %1 ms").arg(env.triggerMs), QString("top-level load %1 ms").arg(env.loadMs)})
+                              QString("triggers %1 ms").arg(env.triggerMs), QString("top-level load %1 ms").arg(env.loadMs),
+                              QString("panel render %1 ms").arg(env.renderMs), QString("completion %1 ms").arg(env.completeMs),
+                              QString("**%1 ms** wall budget per call").arg(env.indexCallMs), QString("**%1 ms** for all index calls").arg(env.indexCallbackMs),
+                              QString("**%1 calls per second**").arg(env.indexPerSecond)})
             QVERIFY2(api.contains(s), qPrintable(s));
         QVERIFY(api.contains("16 MiB Lua heap"));
         QVERIFY(guide.contains("4 000 000 matcher steps") && api.contains("4 000 000-step"));

@@ -342,7 +342,7 @@ bool packDirectory(const QString &dirIn, const QString &outFile, QList<PluginErr
     return true;
 }
 
-bool createTemplate(const QString &dir, const QString &name, QString *err) {
+bool createTemplate(const QString &dir, const QString &name, QString *err, int api) {
     auto fail = [&](const QString &m) { if (err) *err = m; return false; };
     QString id = name.toLower();
     id.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("-"));
@@ -350,13 +350,42 @@ bool createTemplate(const QString &dir, const QString &name, QString *err) {
     while (id.startsWith(QLatin1Char('-'))) id.remove(0, 1);
     while (id.endsWith(QLatin1Char('-'))) id.chop(1);
     if (id.isEmpty() || !validPluginId(id)) return fail(QStringLiteral("'%1' cannot be turned into a plugin id; use letters and digits").arg(name));
+    if (api < kApiVersion || api > kApiVersionMax) return fail(QStringLiteral("unsupported plugin API %1 (use %2 to %3)").arg(api).arg(kApiVersion).arg(kApiVersionMax));
     if (QFileInfo::exists(dir) && !QDir(dir).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden))
         return fail(QStringLiteral("%1 already exists and is not empty").arg(dir));
     if (!QDir().mkpath(dir)) return fail(QStringLiteral("cannot create %1").arg(dir));
     const QJsonObject m{{"id", id}, {"name", name.left(80)}, {"version", "0.1.0"}, {"author", "Your Name"},
-                        {"description", "Describe what this plugin does."}, {"api", kApiVersion}, {"tier", "script"},
-                        {"entry", "main.lua"}, {"permissions", QJsonArray{"note.read", "note.edit", "ui"}}, {"min_app", "0.1.0"}};
-    const QByteArray lua = QByteArrayLiteral(
+                        {"description", "Describe what this plugin does."}, {"api", api}, {"tier", "script"},
+                        {"entry", "main.lua"},
+                        {"permissions", api >= 2 ? QJsonArray{"note.read", "notes.read", "notes.index", "ui.panel"} : QJsonArray{"note.read", "note.edit", "ui"}},
+                        {"min_app", "0.1.0"}};
+    const QByteArray lua2 = QByteArrayLiteral(
+        "-- Hyprnotes plugin (API 2). Edit this file, then press Reload on the Plugins page; no restart needed.\n"
+        "-- API 2 adds the note index (hn.notes.links/backlinks/resolve/frontmatter/query), side panels (hn.panel),\n"
+        "-- completion popups (hn.complete) and [[link]] handlers (hn.link_handler). Each needs its own permission in plugin.json.\n"
+        "-- A panel is described, not drawn: render() returns blocks and the app draws them. Budget: 50 ms per render.\n"
+        "\n"
+        "hn.panel{\n"
+        "  id = \"backlinks\",\n"
+        "  title = \"Backlinks\",\n"
+        "  icon = \"link\",\n"
+        "  refresh_on = { \"note.opened\", \"note.saved\" },        -- re-render when these happen (only while the panel is visible)\n"
+        "  render = function(ctx)\n"
+        "    if not ctx.path then return { { type = \"empty\", text = \"No note open\" } } end   -- ctx.path needs note.read\n"
+        "    local rows = hn.notes.backlinks(ctx.path, { limit = 50 })                         -- permission: notes.index\n"
+        "    if not rows then return { { type = \"empty\", text = \"The index is not available\" } } end\n"
+        "    if #rows == 0 then return { { type = \"empty\", text = \"Nothing links here yet\" } } end\n"
+        "    local items = {}\n"
+        "    for i, row in ipairs(rows) do\n"
+        "      items[i] = {\n"
+        "        type = \"item\", title = row.src, subtitle = row.context, path = row.src, line = row.line,\n"
+        "        on_click = function() hn.notes.open(row.src) end,                              -- permission: notes.read\n"
+        "      }\n"
+        "    end\n"
+        "    return { { type = \"heading\", text = #rows .. \" backlinks\" }, { type = \"list\", items = items } }\n"
+        "  end,\n"
+        "}\n");
+    const QByteArray lua = api >= 2 ? lua2 : QByteArrayLiteral(
         "-- Hyprnotes plugin (API 1). Edit this file, then press Reload on the Plugins page; no restart needed.\n"
         "-- Scripts run in a sandbox: no io, os, debug or package. You get the standard string, table, math, utf8\n"
         "-- and coroutine libraries plus the `hn` API. Each callback has a time budget (events 50 ms, commands 2 s).\n"
@@ -380,7 +409,8 @@ bool createTemplate(const QString &dir, const QString &name, QString *err) {
         "--   hn.on(\"note.saved\", function(path) hn.log(\"saved \" .. path) end)\n"
         "--   hn.trigger{ pattern = \"::hi\", replace = function() return \"Hello!\" end }\n"
         "--   hn.toolbar_button{ id = \"b\", title = \"Shout\", run = function() end }\n"
-        "--   hn.storage.set(\"count\", 1)   -- permission: storage (1 MiB per plugin)\n");
+        "--   hn.storage.set(\"count\", 1)   -- permission: storage (1 MiB per plugin)\n"
+        "-- Want panels, link completion or the note index? Set \"api\": 2 in plugin.json (see docs/plugin-api.md).\n");
     QFile pj(dir + QStringLiteral("/plugin.json")), ml(dir + QStringLiteral("/main.lua"));
     if (!pj.open(QIODevice::WriteOnly) || !ml.open(QIODevice::WriteOnly)) return fail(QStringLiteral("cannot write files in %1").arg(dir));
     pj.write(QJsonDocument(m).toJson(QJsonDocument::Indented));

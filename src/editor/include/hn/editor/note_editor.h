@@ -5,10 +5,12 @@
 #include <QUrl>
 #include <QWidget>
 #include <functional>
+#include <memory>
 #include <optional>
 
 #include "hn/editor/history.h"
 #include "hn/editor/types.h"
+#include "hn/editor/wiki_links.h"
 #include "hn/theme/theme.h"
 
 class QStackedLayout;
@@ -86,6 +88,52 @@ public:
     void insertMarkdown(const QString &md, bool replaceAll);
     bool caretInCode() const;
 
+    // ---- Plugin API v2: wiki-link overlay (all off by default; nothing is allocated, connected or filtered until enabled) ----
+    // Ranges of [[x]] / [[x|alias]] / [[x#h]] / ![[x]] in the VISIBLE text (visual and source mode, never in code) are painted
+    // by an overlay in paintEvent: resolved = accent tint + solid accent underline, unresolved = dashed muted-danger underline,
+    // ambiguous = double accent underline. The document, its formats and the Markdown round trip are never touched. Ranges are
+    // computed lazily for the visible blocks only and cached per block (invalidated by edits of that block), so paint cost does
+    // not depend on note size.
+    // Independent of the overlay: visual-mode saves/mode switches ALWAYS write [[x]] / ![[x]] with unescaped brackets (the exporter
+    // would otherwise write "\[\[x\]\]", which hn::core::extractLinks no longer sees as a link). A deliberately escaped
+    // "\[\[x]]" is indistinguishable from a link in the visual document and is therefore written unescaped too (source mode
+    // keeps the exact bytes).
+    void setWikiLinksEnabled(bool on);
+    bool wikiLinksEnabled() const;
+    // Consulted lazily at paint/hit-test time with the link TARGET; answers are cached until invalidateLinkStates().
+    // Without a resolver every link counts as Resolved.
+    void setLinkResolver(std::function<LinkState(const QString &target)> r);
+    void invalidateLinkStates();                 // drop cached answers and repaint (call when the note index changes)
+    // Activation: Ctrl+click, Ctrl+Enter with the caret inside (or at the edge of) a link, and, only when enabled, a plain click
+    // that does not drag. Plain clicks always also place the caret. Hovering a link shows a pointing hand while Ctrl is held
+    // (always when plain-click activation is on). Emits wikiLinkActivated (NOT linkActivated(QUrl), which stays for http links).
+    void setLinkClickActivates(bool on);
+    bool linkClickActivates() const;
+    // Helpers (also for tests). `viewportPos` is in the active edit's viewport coordinates.
+    std::optional<LinkRefInfo> linkAt(const QPoint &viewportPos) const;
+    QList<LinkRange> linkRangesInBlock(int blockNumber) const;   // empty unless enabled; block-local UTF-16 offsets, state resolved
+
+    // ---- Plugin API v2: completion popup ----
+    // After a typed character (never inside code, during IME preedit, or with a selection) the text before the caret is matched
+    // against the triggers; on a match completionRequested is emitted (once per distinct query, no timers). Rules: a trigger that
+    // starts with '[' (e.g. "[[") matches its LAST occurrence on the line and its query may contain spaces until the closing
+    // bracket ("]]") or the end of the line; every other trigger (e.g. "/") must begin a whitespace-delimited token (line start or
+    // after whitespace) and its query ends at the first whitespace. The session ends (popup closes, completionDismissed) on Esc,
+    // click, focus loss, mode switch, the caret leaving trigger..query, or the query becoming invalid (space, "]]").
+    void setCompletionTriggers(const QStringList &triggers);
+    // Reply to completionRequested. `generation` is CompletionRequest::generation; replies for an older request are ignored
+    // (-1 = "for the current request"). An empty list hides the popup but keeps the session. Ignored when no session is active.
+    // The popup never takes focus: Up/Down/PageUp/PageDown move, Enter/Tab accept, Esc dismisses (forwarded from the editor).
+    void showCompletions(const QList<CompletionItem> &items, int generation = -1);
+    void dismissCompletions();
+    bool completionActive() const;               // a session is open (popup may still be waiting for items)
+    QWidget *completionPopup() const;            // null until first shown; for tests/theming only
+    // Replaces trigger+query by item.insert as ONE undo step (undo restores the literal typed text), places the caret at
+    // cursorOffset, emits completionAccepted. row < 0 = the highlighted row. False if there is no popup/row.
+    bool acceptCompletion(int row = -1);
+    // Popup placement: below the caret, above if it does not fit, inside `available` (pure; exposed for tests).
+    static QRect placeCompletionPopup(const QRect &caretGlobal, const QSize &size, const QRect &available);
+
     QTextEdit *visualEdit() const;
     QPlainTextEdit *sourceEdit() const;
     QWidget *activeEdit() const;
@@ -99,6 +147,10 @@ signals:
     void switchRefused(const QString &reason);
     void pasteNeedsSource(const QString &reason);
     void historyWarning(const QString &reason);
+    void wikiLinkActivated(const hn::editor::LinkRefInfo &link);                 // see setLinkClickActivates()
+    void completionRequested(const hn::editor::CompletionRequest &req);         // see setCompletionTriggers()
+    void completionAccepted(const hn::editor::CompletionItem &item);            // after the insertion was applied
+    void completionDismissed();
 
 private:
     void switchTo(Mode m, const QString &reason);
@@ -112,6 +164,17 @@ private:
     void showContextMenu(QWidget *edit, const QPoint &p);
     void emitCursorInfo();
     void checkTrigger();
+    bool eventFilter(QObject *o, QEvent *e) override;
+    struct LinksImpl;
+    LinkState stateOf(const QString &target) const;
+    void evaluateCompletion(bool fromTyping);
+    void linksTyped();
+    void linksCaretMoved();
+    void linksDocChanged(QTextDocument *d, int pos, int added);
+    void linksRefreshHooks();
+    void paintLinks(QPainter &p);
+    bool activateAtCaret();
+    LinksImpl *m_l = nullptr;   // null until the plugin API is used (raw: LinksImpl is private to note_editor_links.cpp)
 
     TriggerHandler m_trigger;
     bool m_inTrigger = false;

@@ -226,6 +226,7 @@ void PluginsPage::refresh() {
 void PluginsPage::rebuildDetail() {
     while (QLayoutItem *it = m_detailLay->takeAt(0)) { if (auto *w = it->widget()) w->deleteLater(); delete it; }
     m_permLabels.clear();
+    m_regLabels.clear();
     m_settingEditors.clear();
     for (const char *n : {"enable", "disable", "reload", "remove", "folder", "audit"}) m_buttons.remove(n);
     auto *mgr = m_c->plugins().managerIfActive();
@@ -293,6 +294,24 @@ void PluginsPage::rebuildDetail() {
                                 : QString("padding-left: 4px; border-left: 3px solid %1;").arg(t.border.name()));
         m_permLabels << l;
         m_detailLay->addWidget(l);
+    }
+    if (const PluginRegs *regs = mgr->registry()->of(m.id); regs && info.status == Status::Enabled) {   // what the plugin added to the app (cached, no Lua needed)
+        QStringList rows;
+        for (const auto &p : regs->panels) rows << tr("Panel: %1").arg(p.title);
+        QStringList trig;
+        for (const auto &c : regs->completions) trig << QStringLiteral("\"%1\"").arg(c.trigger);
+        if (!trig.isEmpty()) rows << tr("Completion popup after %1").arg(trig.join(QStringLiteral(", ")));
+        if (!regs->linkHandlers.isEmpty()) rows << tr("Handles clicks on [[links]]");
+        if (!rows.isEmpty()) {
+            m_detailLay->addWidget(sectionLabel(tr("ADDS TO THE APP"), m_detail));
+            for (const QString &r : rows) {
+                auto *l = new QLabel(r, m_detail);
+                l->setWordWrap(true);
+                l->setStyleSheet(QString("padding-left: 4px; border-left: 3px solid %1;").arg(t.accent.name()));
+                m_regLabels << l;
+                m_detailLay->addWidget(l);
+            }
+        }
     }
     if (!m.netHosts.isEmpty()) {
         auto *h = new QLabel(tr("Allowed network hosts: %1").arg(m.netHosts.join(QStringLiteral(", "))), m_detail);

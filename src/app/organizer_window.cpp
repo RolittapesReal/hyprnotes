@@ -1,6 +1,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include "organizer_window.h"
+#include "panel_dock.h"
 #include "controller.h"
 #include "settings_dialog.h"
 #include "hn/platform/window_identity.h"
@@ -33,9 +34,10 @@ namespace hn::app {
 // 72 px pane header: title, folder + hairline tag chips (click a chip to filter), colour swatch, pop-out and more.
 class PaneHeader : public QWidget {
 public:
+    friend class hn::app::OrganizerWindow;
     static constexpr int kRight = 136;
     ui::ElidedLabel *title;
-    QWidget *pop = nullptr, *more = nullptr;
+    QWidget *pop = nullptr, *more = nullptr, *toggle = nullptr;
     int color = 0;
     QString folder, fallback;
     QStringList tags;
@@ -55,8 +57,10 @@ protected:
         }
         return QWidget::event(e);
     }
-    void resizeEvent(QResizeEvent *) override {
-        title->setGeometry(16, 12, width() - 16 - kRight, 28);
+    void resizeEvent(QResizeEvent *) override { relayout(); }
+    void relayout() {
+        title->setGeometry(16, 12, width() - 16 - kRight - (toggle && toggle->isVisibleTo(this) ? 36 : 0), 28);
+        if (toggle) toggle->move(width() - 152, 20);
         if (pop) pop->move(width() - 80, 20);
         if (more) more->move(width() - 44, 20);
     }
@@ -123,6 +127,7 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     m_railModel = new RailModel(this);
 
     auto *root = new QHBoxLayout(this);
+    m_root = root;
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     auto vline = [this] { auto *l = new QWidget(this); l->setFixedWidth(1); l->setObjectName("hnVLine"); return l; };
@@ -239,6 +244,10 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     m_header = new PaneHeader(m_pane);
     m_popBtn = new ui::IconButton("popout", tr("Open in sticky window"), m_header, 32);
     m_moreBtn = new ui::IconButton("more", tr("Note actions"), m_header, 32);
+    m_dockToggle = new DockToggle(m_header);
+    m_dockToggle->hide();
+    m_header->toggle = m_dockToggle;
+    connect(m_dockToggle, &QAbstractButton::clicked, this, [this] { setDockVisible(!dockVisible()); });
     m_header->pop = m_popBtn;
     m_header->more = m_moreBtn;
     m_header->onTag = [this](const QString &tag) { setFilter({}, tag); };
@@ -292,6 +301,12 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
         QMenu m(this);
         connect(m.addAction(tr("Settings…")), &QAction::triggered, this, [this] { m_c->showSettings(this); });
         connect(m.addAction(tr("Plugins…")), &QAction::triggered, this, [this] { m_c->showSettings(this, SettingsDialog::kPluginsTab); });
+        if (m_c->plugins().hasPanels()) {
+            auto *pa = m.addAction(tr("Panels"));
+            pa->setCheckable(true);
+            pa->setChecked(dockVisible());
+            connect(pa, &QAction::triggered, this, [this](bool on) { setDockVisible(on); });
+        }
         m_c->populateToolsMenu(&m, m_session.data());
         m.addSeparator();
         connect(m.addAction(tr("Quit Hyprnotes")), &QAction::triggered, this, [this] { m_c->requestQuit(); });
@@ -326,10 +341,76 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     rn->setShortcut(QKeySequence(Qt::Key_F2));
     addAction(rn);
     connect(rn, &QAction::triggered, this, &OrganizerWindow::rename);
+    auto *panelKey = new QShortcut(QKeySequence("Ctrl+Shift+L"), this);
+    connect(panelKey, &QShortcut::activated, this, [this] { if (m_c->plugins().hasPanels()) setDockVisible(!dockVisible()); });
+    connect(&c->plugins(), &PluginService::panelsChanged, this, [this] { syncDock(); });
     rebuildRail();
     updateStacks();
     updateHeader();
     runSearch(0);
+    syncDock();
+}
+
+bool OrganizerWindow::dockVisible() const { return m_dock && m_dock->isVisibleTo(this); }
+
+void OrganizerWindow::syncDock() {
+    const bool has = m_c->plugins().hasPanels();
+    if (!has) {
+        if (m_dock) {
+            if (m_dockExtra) { setMinimumWidth(720); resize(qMax(720, width() - m_dockExtra), height()); m_dockExtra = 0; }
+            delete m_dock; m_dock = nullptr;
+            delete m_dockLine; m_dockLine = nullptr;
+        }
+        m_dockToggle->hide();
+        m_header->relayout();
+        return;
+    }
+    m_dockToggle->show();
+    if (!m_dock) {
+        const DockPrefs pr = m_c->dockPrefs();
+        m_dock = new PanelDock(m_c, this);
+        m_dockLine = new QWidget(this);
+        m_dockLine->setFixedWidth(1);
+        m_dockLine->setObjectName("hnVLine");
+        m_dockLine->setStyleSheet(QString("background: %1;").arg(ui::theme().border.name()));
+        m_root->addWidget(m_dockLine);
+        m_root->addWidget(m_dock);
+        m_dock->setFixedWidth(pr.width);
+        m_dock->hide();
+        m_dockLine->hide();
+        m_dock->setSession(m_session.data());
+        connect(m_dock, &PanelDock::closeRequested, this, [this] { setDockVisible(false); });
+        connect(m_dock, &PanelDock::widthChosen, this, [this](int w) {
+            DockPrefs p = m_c->dockPrefs();
+            p.width = w;
+            m_c->setDockPrefs(p);
+        });
+        if (pr.visible) setDockVisible(true);
+    }
+    m_dockToggle->setChecked(dockVisible());
+    m_header->relayout();
+}
+
+void OrganizerWindow::setDockVisible(bool on) {
+    if (!m_dock || on == dockVisible()) { if (m_dockToggle) m_dockToggle->setChecked(dockVisible()); return; }
+    const int w = m_dock->width() + 1;
+    if (on) {
+        setMinimumWidth(720 + w);
+        m_dockLine->show();
+        m_dock->show();
+        if (!isMaximized() && !isFullScreen()) { resize(width() + w, height()); m_dockExtra = w; }
+        m_dock->setSession(m_session.data());
+        m_dock->refresh();
+    } else {
+        m_dock->hide();
+        m_dockLine->hide();
+        setMinimumWidth(720);
+        if (m_dockExtra) { resize(qMax(720, width() - m_dockExtra), height()); m_dockExtra = 0; }
+    }
+    m_dockToggle->setChecked(on);
+    DockPrefs p = m_c->dockPrefs();
+    p.visible = on;
+    m_c->setDockPrefs(p);
 }
 
 void OrganizerWindow::dragEnterEvent(QDragEnterEvent *e) {
@@ -538,6 +619,7 @@ void OrganizerWindow::attachSession(NoteSession *s) {
     s->editor()->show();
     s->toolbar()->show();
     m_status->setSession(s);
+    if (m_dock) m_dock->setSession(s);
     m_titleConn = connect(s, &NoteSession::titleChanged, this, [this] { updateHeader(); refresh(); });
     updateHeader();
     updateStacks();
@@ -553,6 +635,7 @@ void OrganizerWindow::detachSession() {
     disconnect(m_titleConn);
     m_session = nullptr;
     m_status->setSession(nullptr);
+    if (m_dock) m_dock->setSession(nullptr);
     updateStacks();
 }
 
@@ -589,7 +672,7 @@ void OrganizerWindow::rename() {
     const QString name = QInputDialog::getText(this, tr("Rename note"), tr("File name"), QLineEdit::Normal, cur, &ok);
     if (!ok) return;
     QString err;
-    if (!m_c->renameNote(m_session->rel(), name, &err)) m_status->flash(err);
+    if (!m_c->renameNoteWithLinks(m_session->rel(), name, LinkMode::Ask, &err) && !err.isEmpty()) m_status->flash(err);
 }
 
 void OrganizerWindow::editTags() {

@@ -5,7 +5,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc='Markdown notes and sticky notes for Hyprland (Qt6)'
 arch=('x86_64')
-url='https://example.invalid/hyprnotes'  # release owner: set the real project URL
+url='https://github.com/RolittapesReal/hyprnotes'
 license=('MIT')
 # Direct NEEDED libs of /usr/bin/hyprnotes: Qt6{Core,Gui,Widgets,Network,Sql,Svg}, md4c, libGLX/libOpenGL, libstdc++, libgcc_s, libc.
 # SQLite is used through Qt's qsqlite plugin (qt6-base depends on sqlite); qt6-wayland supplies the Wayland platform plugin.

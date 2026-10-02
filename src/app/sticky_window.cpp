@@ -1,5 +1,6 @@
 #include "sticky_window.h"
 #include "controller.h"
+#include "panel_dock.h"
 #include "ui_common.h"
 #include <QCloseEvent>
 #include <QGuiApplication>
@@ -96,9 +97,11 @@ StickyWindow::StickyWindow(AppController *c, NoteSession *s)
     });
     m_header->onContext = [this](const QPoint &g) { m_c->showNoteContextMenu(m_session->rel(), g, this, true); };
     connect(s, &NoteSession::titleChanged, this, &StickyWindow::refreshTitle);
+    connect(&c->plugins(), &PluginService::panelsChanged, this, [this] { syncPanels(); });
     connect(c, &AppController::noteColorChanged, this, [this](const QString &r) { if (r == m_session->rel()) update(); });
     connect(c, &AppController::themeChanged, this, [this] { for (auto *w : findChildren<QWidget *>()) w->update(); update(); });
     setWorkspaceMode(WorkspaceMode::ThisWorkspace);
+    syncPanels();
     refreshTitle();
     m_status->setSession(s);
     attach();
@@ -108,6 +111,37 @@ StickyWindow::StickyWindow(AppController *c, NoteSession *s)
 }
 
 StickyWindow::~StickyWindow() { detach(); }
+
+// The header button exists only while some plugin has a panel; the popup is created per opening and destroyed on close.
+void StickyWindow::syncPanels() {
+    const bool has = m_c->plugins().hasPanels();
+    if (has && !m_panels) {
+        m_panels = new DockToggle(m_header);
+        m_panels->setFixedSize(kHeader, kHeader);
+        m_panels->setCheckable(false);
+        static_cast<QHBoxLayout *>(m_header->layout())->insertWidget(2, m_panels);   // before the workspace chip... after the title
+        connect(m_panels, &QAbstractButton::clicked, this, [this] { if (m_popup) m_popup->close(); else openPanels(); });
+    } else if (!has && m_panels) {
+        if (m_popup) m_popup->close();
+        delete m_panels;
+        m_panels = nullptr;
+    }
+}
+
+PanelDock *StickyWindow::openPanels() {
+    if (!m_c->plugins().hasPanels()) return nullptr;
+    if (m_popup) return m_popup;
+    auto *d = new PanelDock(m_c, this, true);
+    d->setAttribute(Qt::WA_DeleteOnClose);
+    d->setFixedSize(qBound(int(PanelDock::kMinW), width() - 2 * kEdge, 360), qMax(200, height() - kHeader - 2 * kEdge));
+    d->setSession(m_session.data());
+    connect(d, &PanelDock::closeRequested, d, &QWidget::close);
+    d->move(mapToGlobal(QPoint(width() - kEdge - d->width(), kEdge + kHeader)));
+    d->show();
+    d->view()->setFocus();
+    m_popup = d;
+    return d;
+}
 
 QWidget *StickyWindow::header() const { return m_header; }
 

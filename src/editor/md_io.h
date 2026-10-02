@@ -17,5 +17,7 @@ QTextDocument::MarkdownFeatures mdFeatures();
 void importMarkdown(QTextDocument *doc, const QString &md);
 // Canonical export. Shift+Enter breaks (U+2028) are exported as CommonMark hard breaks ("\" + newline) because
 // Qt's writer would emit a bare newline (soft break).
+// Always leaves the brackets of [[wiki]] / ![[embed]] ranges unescaped (see scanWikiLinks), so a visual-mode save never turns a
+// link into "\\[\\[x\\]\\]" (independent of the link overlay). Cannot tell a deliberately escaped "\\[\\[x]]" from a link.
 QString exportMarkdown(const QTextDocument *doc);
 } // namespace hn::editor

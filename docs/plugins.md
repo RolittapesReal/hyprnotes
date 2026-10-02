@@ -8,7 +8,7 @@ Plugins let you change how Hyprnotes works: add commands, expand text as you typ
 
 That warning is shown, always visible, in the dialog where you approve a plugin. Read [the security model](#security-model-and-its-limits) before you publish or install anything.
 
-Companion documents: [plugin-api.md](plugin-api.md) (every `hn.*` function), [examples/plugins](../examples/plugins) (seven complete plugins).
+Companion documents: [plugin-api.md](plugin-api.md) (every `hn.*` function), [examples/plugins](../examples/plugins) (ten complete plugins).
 
 ## Two kinds of plugin
 
@@ -68,7 +68,7 @@ The command-line steps below need the `hyprnotes` binary with the plugin authori
    hyprnotes --pack-plugin ~/shout      # writes a .hnplugin archive
    ```
 
-Try the finished examples in `examples/plugins/` (`word-count`, `insert-date`, `sort-lines`, `markdown-toc`, `title-case-selection`, `daily-note`, `snippets`): each is a folder with `plugin.json`, `main.lua` and a README, and each is installed and run by the test-suite.
+Try the finished examples in `examples/plugins/` (`word-count`, `insert-date`, `sort-lines`, `markdown-toc`, `title-case-selection`, `daily-note`, `snippets`, and the API-2 examples `backlinks-panel`, `link-completion`, `open-tasks`): each is a folder with `plugin.json`, `main.lua` and a README, and each is installed and run by the test-suite.
 
 ## Anatomy of a plugin
 
@@ -106,7 +106,7 @@ my-plugin/
 | `author` | yes | up to 80 characters, shown in the approval dialog |
 | `description` | yes | up to 500 characters |
 | `homepage` | no | an http(s) URL |
-| `api` | yes | the integer `1` |
+| `api` | yes | the integer `1` (the original API) or `2` (adds the note index, panels, completion and link handlers; see [Plugin API 2](#plugin-api-2-panels-completion-and-the-note-index)). API-2 permissions in an `"api": 1` manifest are rejected |
 | `tier` | yes | `"script"` here; `"native"` for compiled plugins |
 | `entry` | no | relative path to the Lua file, default `main.lua` |
 | `permissions` | yes | array of permission names; `[]` for none; no duplicates |
@@ -147,6 +147,12 @@ Ask only for what you use. Each call to a protected function checks that the use
 | `network` | Send and receive data over HTTPS with the hosts it lists | high | yes |
 | `theme` | Change theme colours | medium | yes |
 | `native` | Run native code with full access to your account (not sandboxed) | critical | yes |
+| `notes.index` | Read link, tag and task data about all notes | medium | no |
+| `ui.panel` | Show its own panel next to your notes | low | no |
+| `editor.complete` | Offer completion suggestions while you type | low | no |
+| `editor.links` | Handle clicks on [[links]] in your notes | medium | no |
+
+The last four need `"api": 2`. `notes.index` is read-only but covers every note's links, tags, frontmatter and tasks, so with `network` it can leak the shape of your whole library; `editor.links` lets a plugin decide what happens when you click a `[[link]]`.
 
 Combinations matter more than single permissions: `note.read` + `network` lets a plugin send your note text to the hosts it lists; `notes.read` + `network` can send your whole library. `notes.write` and `note.edit` can destroy text (undo exists, but it is not a backup). Plugins that need no permission at all (typing triggers, commands that only call `hn.time`) are the easiest to trust.
 
@@ -203,6 +209,58 @@ Things that are decided when the plugin **loads** (such as which triggers exist)
 
 Plugin-private data that is not a setting goes through `hn.storage` (permission `storage`, 1 MiB).
 
+## Plugin API 2: panels, completion and the note index
+
+Set `"api": 2` in `plugin.json` to get four more permissions and the functions that go with them. Nothing changes for `"api": 1` plugins: they keep exactly the surface described above, and the new functions do not exist for them.
+
+```json manifest
+{
+  "id": "open-tasks",
+  "name": "Open Tasks",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "A panel that lists unchecked tasks from all notes.",
+  "api": 2,
+  "tier": "script",
+  "permissions": ["ui.panel", "notes.index", "notes.read"],
+  "min_app": "0.1.0"
+}
+```
+
+- **The note index** (`notes.index`): `hn.notes.links`, `backlinks`, `resolve`, `frontmatter` and `query` give you link, tag and task data without reading every note. `query` takes a *table*, never SQL.
+- **Panels** (`ui.panel`): `hn.panel{...}` adds a page to the side dock. You return blocks (headings, text, lists of items, buttons); the app draws them, so a plugin cannot show arbitrary widgets.
+- **Completion** (`editor.complete`): `hn.complete{ trigger = "[[", items = ... }` fills a popup while the user types.
+- **Link handlers** (`editor.links`): react when the user clicks a `[[link]]`.
+- **Open and rename** (`notes.read`, `notes.write`): `hn.notes.open` shows a note, `hn.notes.rename` renames one (opt-in link rewriting; the app asks the user first).
+
+A complete panel in a few lines:
+
+```lua test perms=ui.panel,notes.index,notes.read api=2
+hn.panel{
+  id = "tasks",
+  title = "Open tasks",
+  refresh_on = { "note.saved" },
+  render = function()
+    local rows, err = hn.notes.query{ from = "tasks", where = { { field = "done", op = "=", value = false } }, limit = 50 }
+    if not rows then return { { type = "empty", text = "Index not available: " .. tostring(err) } } end
+    local items = {}
+    for i, row in ipairs(rows) do
+      items[i] = { type = "item", title = row.text, subtitle = row.path, on_click = function() hn.notes.open(row.path) end }
+    end
+    return { { type = "heading", text = #rows .. " open tasks" }, { type = "list", items = items } }
+  end,
+}
+```
+
+Things worth knowing:
+
+- **Laziness is kept.** The app lists your panels, completion triggers and link handlers from a cache of your registrations without starting Lua. Your Lua state is created the first time something is actually asked of it (a render, a completion request, a click). Panels that are not visible are never rendered.
+- **Index calls can fail softly.** The index may be busy or not ready: they return `nil, "<reason>"` (for example `"timeout: index call exceeded 100 ms"`). Always handle `nil`; the examples show empty-state blocks.
+- **Budgets are tight on purpose.** A panel render has 50 ms and completion 20 ms, because the user is waiting for them. Do the work in the index (`query`), not in loops over `hn.notes.read`.
+- **Scaffold.** `createTemplate(dir, name, &err, 2)` writes an API-2 backlinks panel sample (the plain `createTemplate(dir, name, &err)` still writes the API-1 sample).
+
+Full reference: [plugin-api.md](plugin-api.md#the-note-index-hnnotes-api-2), [panels](plugin-api.md#panels-api-2) and [editor hooks](plugin-api.md#editor-hooks-api-2).
+
 ## Budgets and limits you will notice
 
 | What | Limit |
@@ -217,6 +275,10 @@ Plugin-private data that is not a setting goes through `hn.storage` (permission 
 | Notifications | 10 per 10 seconds |
 | HTTP | 20 requests per minute, 1 MiB response |
 | Notes written | 50 per callback |
+| Panel render (API 2) | 50 ms, at most 200 blocks |
+| Completion (API 2) | 20 ms per plugin, at most 50 items |
+| Index calls (API 2) | 100 ms each, 500 ms per callback, 200 per second, 500 rows, strings 64 KiB |
+| Notes opened (API 2) | 5 per callback |
 | Three failures in a row | the plugin is switched off and you are told |
 
 A callback that overruns its budget is stopped, counts as a failure and its error goes to the log. Time spent waiting for the user in a dialog or for the network does not count.
@@ -238,7 +300,7 @@ A callback that overruns its budget is stopped, counts as a failure and its erro
   {"ts":"2026-10-01T14:05:09.123Z","event":"denied","plugin":"my-plugin","detail":"note.edit"}
   ```
 
-  Events: `install`, `upgrade`, `consent`, `enable`, `disable`, `remove`, `denied` (a call without permission, or a refused URL), `failure`, `auto-disable`, `tamper` (files changed after approval), `reload-trust`, `network` (method and **host only**), `notes.create` / `notes.write` / `notes.delete` (note path). Note text is never written to the audit log.
+  Events: `install`, `upgrade`, `consent`, `enable`, `disable`, `remove`, `denied` (a call without permission, or a refused URL), `failure`, `auto-disable`, `tamper` (files changed after approval), `reload-trust`, `network` (method and **host only**), `notes.create` / `notes.write` / `notes.delete` / `notes.rename` (note path; rename also shows the new name), and for API 2 a `denied` line when an index call is refused (rate limit, 100 ms overrun, a rejected query). Note text is never written to the audit log.
 - **`permission denied: network (host 'x' is not listed in net_hosts)`**: add the host to `net_hosts` and approve again.
 - **`no active note in this context`**: `hn.note.*` only works inside commands and note events, not while the file loads.
 - **`pattern too complex`**: your pattern backtracks too much for the 4 000 000-step budget; make it more specific (anchor it with `^`, avoid several `.-` in a row).

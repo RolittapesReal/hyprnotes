@@ -11,6 +11,7 @@ struct CliOptions {
     bool version = false, help = false, printRules = false;
     QString importTheme;   // --import-theme FILE
     QString installPlugin, newPlugin, checkPlugin, packPlugin;   // --install-plugin PATH, --new-plugin NAME, --check-plugin DIR, --pack-plugin DIR
+    int newApi = 1;                                              // --api N with --new-plugin (1 or 2)
     bool trustPlugin = false;                                    // --yes-i-trust-this-plugin (skips typing the id)
     bool pluginAction() const { return !installPlugin.isEmpty() || !newPlugin.isEmpty() || !checkPlugin.isEmpty() || !packPlugin.isEmpty(); }
     QString error;   // non-empty => print and exit 2

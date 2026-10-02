@@ -1,0 +1,12 @@
+{
+  "id": "backlinks-panel",
+  "name": "Backlinks Panel",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "A side panel that lists the notes linking to the note you have open, with the sentence around each link. Click an entry to open that note.",
+  "api": 2,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["note.read", "notes.read", "notes.index", "ui.panel"],
+  "min_app": "0.1.0"
+}

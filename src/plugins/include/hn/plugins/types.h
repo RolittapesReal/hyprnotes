@@ -15,7 +15,8 @@
 
 namespace hn::plugins {
 
-inline constexpr int kApiVersion = 1;
+inline constexpr int kApiVersion = 1;     // the original API; plugins declaring "api": 1 see exactly this surface
+inline constexpr int kApiVersionMax = 2;  // newest API this app supports ("api": 2 adds notes.index, panels, completion, link handlers)
 inline constexpr const char *kAppVersion = "0.1.0";
 
 // Caps from the design spec.
@@ -48,6 +49,8 @@ inline constexpr const char *kThirdPartyWarning =
 inline constexpr const char *kNativeWarning = "This plugin runs native code with full access to your user account. It is not sandboxed.";
 
 // Permission names: note.read note.edit notes.read notes.write ui storage clipboard network theme native
+//   API 2 only: notes.index ui.panel editor.complete editor.links
+int permissionMinApi(const QString &p);             // 1 for the original permissions, 2 for the API-2 ones
 QStringList knownPermissions();
 bool isDangerousPermission(const QString &p);       // network, notes.write, clipboard, theme, native
 QString permissionDescription(const QString &p);    // plain language for the consent dialog
@@ -87,6 +90,16 @@ public:
     virtual void endTransaction() = 0;
 };
 struct NoteInfo { QString path, title; };
+
+// ---- API 2 bridge data ----
+// Result of an API-2 bridge call. The index side enforces its own 100 ms budget and reports it as Timeout.
+enum class BridgeStatus { Ok, Unsupported, Timeout, Invalid, NotFound };
+struct LinkRow {  // one [[link]]: outgoing (links) or incoming (backlinks, src = the note containing it)
+    QString kind, target, alias, anchor, resolved, src, context;  // kind: "link" | "embed"; resolved = note path or empty
+    int line = 0;
+};
+struct ResolveResult { QString status; QString path; QStringList candidates; };  // status: "resolved" | "ambiguous" | "unresolved"
+
 class LibraryBridge {
 public:
     virtual ~LibraryBridge() = default;
@@ -95,6 +108,18 @@ public:
     virtual QString create(const QString &title, const QString &text) = 0;  // returns path, empty on failure
     virtual bool write(const QString &path, const QString &text) = 0;
     virtual bool remove(const QString &path) = 0;
+    // ---- API 2 (additive; the defaults say "unsupported" so older implementations and fakes keep compiling) ----
+    // The runtime has already checked permissions, argument shape and the per-plugin rate limit. Every call here should finish
+    // within 100 ms; the index reports an overrun as Timeout (the runtime also discards a result that arrived too late).
+    virtual BridgeStatus links(const QString &path, QList<LinkRow> *out) { Q_UNUSED(path) Q_UNUSED(out) return BridgeStatus::Unsupported; }
+    virtual BridgeStatus backlinks(const QString &path, int limit, int offset, QList<LinkRow> *out) { Q_UNUSED(path) Q_UNUSED(limit) Q_UNUSED(offset) Q_UNUSED(out) return BridgeStatus::Unsupported; }
+    virtual BridgeStatus resolve(const QString &name, ResolveResult *out) { Q_UNUSED(name) Q_UNUSED(out) return BridgeStatus::Unsupported; }
+    virtual BridgeStatus frontmatter(const QString &path, QJsonObject *out) { Q_UNUSED(path) Q_UNUSED(out) return BridgeStatus::Unsupported; }
+    // spec: already validated and normalised {from, where[], order[], select[], limit<=500, offset}; never SQL.
+    virtual BridgeStatus query(const QJsonObject &spec, QJsonArray *rows) { Q_UNUSED(spec) Q_UNUSED(rows) return BridgeStatus::Unsupported; }
+    virtual BridgeStatus open(const QString &path, const QString &where) { Q_UNUSED(path) Q_UNUSED(where) return BridgeStatus::Unsupported; }  // where: "organizer" | "sticky"
+    // newName is a bare file name (no directories). Applying link rewrites is up to the app (it confirms with the user).
+    virtual BridgeStatus rename(const QString &path, const QString &newName, bool updateLinks, QString *newPath) { Q_UNUSED(path) Q_UNUSED(newName) Q_UNUSED(updateLinks) Q_UNUSED(newPath) return BridgeStatus::Unsupported; }
 };
 class UiBridge {  // may block (nested event loop); the runtime excludes blocked time from the callback budget
 public:
@@ -129,12 +154,41 @@ public:
     virtual ~ThemeBridge() = default;
     virtual bool setToken(const QString &pluginId, const QString &token, const QString &value) = 0;
 };
+// ---- API 2: panels and editor hooks (host-drawn, declarative) ----
+struct PanelBlock {
+    QString type;                // heading | text | list | item | markdown | button | empty
+    QString text;                // heading/text/markdown/empty content, button label
+    QString title, subtitle, path;  // item
+    int line = 0;                // item: 1-based line in path, 0 = none
+    int level = 2;               // heading: 1-3
+    int click = 0;               // item/button: token for PluginManager::panelClick (0 = not clickable)
+    QList<PanelBlock> items;     // list: item blocks
+};
+// Implemented by the app's panel dock. All methods default to no-ops.
+class PanelBridge {
+public:
+    virtual ~PanelBridge() = default;
+    virtual void showPanel(const QString &qualifiedId, const QString &title, const QString &icon) { Q_UNUSED(qualifiedId) Q_UNUSED(title) Q_UNUSED(icon) }  // a panel became available
+    virtual void updatePanel(const QString &qualifiedId, const QList<PanelBlock> &blocks, const QString &error = QString()) { Q_UNUSED(qualifiedId) Q_UNUSED(blocks) Q_UNUSED(error) }
+    virtual void removePanel(const QString &qualifiedId) { Q_UNUSED(qualifiedId) }
+};
+struct CompletionItem { QString pluginId, label, detail, insert; int cursorOffset = -1; };  // cursorOffset: characters into insert, -1 = end
+struct LinkActivation { QString kind, target, alias, anchor, resolved; };                   // resolved = note path or empty
+// Implemented by the editor. Replies to PluginManager::requestCompletion / requestLinkActivation.
+class EditorHooksBridge {
+public:
+    virtual ~EditorHooksBridge() = default;
+    virtual void completionReply(quint64 token, const QList<CompletionItem> &items) { Q_UNUSED(token) Q_UNUSED(items) }
+    virtual void linkActivationReply(quint64 token, bool handled) { Q_UNUSED(token) Q_UNUSED(handled) }
+};
 struct HostBridges {
     LibraryBridge *library = nullptr;
     UiBridge *ui = nullptr;
     NetBridge *net = nullptr;
     ClipboardBridge *clipboard = nullptr;
     ThemeBridge *theme = nullptr;
+    PanelBridge *panel = nullptr;          // API 2
+    EditorHooksBridge *editor = nullptr;   // API 2
 };
 
 // Runtime URL policy for hn.http (exposed for tests): https only, no userinfo, default port, host in allowlist.
@@ -146,6 +200,14 @@ struct ToolbarReg { QString pluginId, id, title, icon; };
 struct MenuReg { QString pluginId, id, title, where; };
 struct TriggerReg { QString pluginId, pattern; };
 struct SettingReg { QString pluginId, id, type, title; QVariant def; };
+struct PanelReg {
+    QString pluginId, id, title, icon;
+    QStringList refreshOn;  // events that ask the host to re-render the panel
+    bool onEvent = false;   // the plugin also wants those events delivered (on_event)
+    QString qualifiedId() const { return pluginId + QLatin1Char(':') + id; }
+};
+struct CompleteReg { QString pluginId, id, trigger; };
+struct LinkHandlerReg { QString pluginId; bool hasPattern = false; };
 
 struct PluginRegs {
     QList<CommandReg> commands;
@@ -153,6 +215,9 @@ struct PluginRegs {
     QList<MenuReg> menus;
     QList<TriggerReg> triggers;
     QList<SettingReg> settings;
+    QList<PanelReg> panels;               // API 2
+    QList<CompleteReg> completions;       // API 2
+    QList<LinkHandlerReg> linkHandlers;   // API 2
     QStringList events;  // subscribed events
     QJsonObject toJson() const;
     static PluginRegs fromJson(const QString &pluginId, const QJsonObject &o);
@@ -173,6 +238,10 @@ public:
     QList<TriggerReg> triggers() const;
     QList<SettingReg> settings(const QString &pluginId = QString()) const;
     QStringList subscribers(const QString &event) const;
+    QList<PanelReg> panels(const QString &pluginId = QString()) const;      // API 2
+    QList<PanelReg> panelsRefreshingOn(const QString &event) const;
+    QList<CompleteReg> completions(const QString &trigger = QString()) const;
+    QList<LinkHandlerReg> linkHandlers() const;
 signals:
     void changed();
 private:

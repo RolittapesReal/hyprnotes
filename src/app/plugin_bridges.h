@@ -5,6 +5,8 @@
 #include "note_session.h"
 #include <QPointer>
 #include <functional>
+#include <future>
+#include <vector>
 
 class QNetworkAccessManager;
 
@@ -43,19 +45,40 @@ private:
 // list/read/create/write/delete over NoteRepository / LibraryIndex. Open notes are read from, and written through, their
 // session (undoable, normal autosave, no conflict with the editor); closed notes use the repository's atomic save with its
 // conflict detection (this call waits for the result, 5 s cap).
+// API 2: links/backlinks/resolve/query run on the index worker with a 100 ms wall limit (the call is started on a helper thread
+// and waited for; an overrun is reported as Timeout and its result is discarded). Unsaved open notes are merged in (dirtyDocs()).
+// frontmatter() parses the open note's current text or the file's head with hn::core::parseFrontmatter (no index involved).
 class PluginLibraryBridge : public hn::plugins::LibraryBridge {
 public:
     explicit PluginLibraryBridge(AppController *c) : m_c(c) {}
+    ~PluginLibraryBridge() override { waitLate(); }
     QList<hn::plugins::NoteInfo> list(const QString &query) override;
     bool read(const QString &path, QString *text) override;
     QString create(const QString &title, const QString &text) override;
     bool write(const QString &path, const QString &text) override;
     bool remove(const QString &path) override;
+    hn::plugins::BridgeStatus links(const QString &path, QList<hn::plugins::LinkRow> *out) override;
+    hn::plugins::BridgeStatus backlinks(const QString &path, int limit, int offset, QList<hn::plugins::LinkRow> *out) override;
+    hn::plugins::BridgeStatus resolve(const QString &name, hn::plugins::ResolveResult *out) override { return resolveFrom(name, QString(), out); }
+    hn::plugins::BridgeStatus resolveFrom(const QString &name, const QString &fromRel, hn::plugins::ResolveResult *out);
+    hn::plugins::BridgeStatus frontmatter(const QString &path, QJsonObject *out) override;
+    hn::plugins::BridgeStatus query(const QJsonObject &spec, QJsonArray *rows) override;
+    hn::plugins::BridgeStatus open(const QString &path, const QString &where) override;
+    hn::plugins::BridgeStatus rename(const QString &path, const QString &newName, bool updateLinks, QString *newPath) override;
     static constexpr int kMaxList = 200;
+    static constexpr int kMaxRows = 500;
+    static constexpr int kIndexMs = 100;
     static constexpr qint64 kMaxText = 4 * 1024 * 1024;
+    void waitLate();                         // joins index calls that overran (before the index is destroyed)
+    int lateCalls() const { return int(m_late.size()); }
+    // Test seam: runs BEFORE every index call on the helper thread (simulates a slow index).
+    std::function<void()> indexDelayForTests;
 private:
     bool validRel(const QString &rel) const;
+    bool exists(const QString &rel) const;
+    template <class F> bool bounded(F f);   // true = finished within kIndexMs
     AppController *m_c;
+    std::vector<std::future<void>> m_late;
 };
 
 // notify -> status strip of the active window; prompt/confirm/pick -> flat modernist dialogs (or the test hooks).

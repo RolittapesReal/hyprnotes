@@ -37,8 +37,8 @@ NoteEditor::NoteEditor(QWidget *parent) : QWidget(parent)
     m_vis->setStyleContext(f.family(), mono.family(), m_lh, QColor());
     m_rec.setBlockFixup([this](QTextBlockFormat &bf) { bf.setLineHeight(m_lh * 100, QTextBlockFormat::ProportionalHeight); });
 
-    m_vis->afterTyping = [this] { checkTrigger(); };
-    m_src->afterTyping = [this] { checkTrigger(); };
+    m_vis->afterTyping = [this] { checkTrigger(); if (m_l) linksTyped(); };
+    m_src->afterTyping = [this] { checkTrigger(); if (m_l) linksTyped(); };
     connect(&m_rec, &EditRecorder::changed, this, [this](int r) { if (!m_loading) emit contentChanged(r); });
     connect(&m_rec, &EditRecorder::recoveryWriteFailed, this, &NoteEditor::historyWarning);
     connect(&m_rec, &EditRecorder::historyInvalidated, this, &NoteEditor::historyWarning);
@@ -48,16 +48,16 @@ NoteEditor::NoteEditor(QWidget *parent) : QWidget(parent)
     connect(m_src, &SourceEdit::redoRequested, this, &NoteEditor::redo);
     connect(m_vis, &VisualEdit::linkActivated, this, &NoteEditor::linkActivated);
     connect(m_vis, &VisualEdit::linkRequested, this, &NoteEditor::editLink);
-    connect(m_vis, &QTextEdit::cursorPositionChanged, this, [this] { emitCursorInfo(); emit formatStateChanged(); });
+    connect(m_vis, &QTextEdit::cursorPositionChanged, this, [this] { emitCursorInfo(); emit formatStateChanged(); if (m_l) linksCaretMoved(); });
     connect(m_vis, &QTextEdit::currentCharFormatChanged, this, [this] { emit formatStateChanged(); });
-    connect(m_src, &QPlainTextEdit::cursorPositionChanged, this, [this] { emitCursorInfo(); });
+    connect(m_src, &QPlainTextEdit::cursorPositionChanged, this, [this] { emitCursorInfo(); if (m_l) linksCaretMoved(); });
     connect(m_vis, &QWidget::customContextMenuRequested, this, [this](const QPoint &p) { showContextMenu(m_vis, p); });
     connect(m_src, &QWidget::customContextMenuRequested, this, [this](const QPoint &p) { showContextMenu(m_src, p); });
     switchTo(Mode::Visual, {});
     m_stack->setCurrentWidget(m_vis);
 }
 
-NoteEditor::~NoteEditor() = default;
+// ~NoteEditor is defined in note_editor_links.cpp (LinksImpl must be complete there).
 
 QTextEdit *NoteEditor::visualEdit() const { return m_vis; }
 QPlainTextEdit *NoteEditor::sourceEdit() const { return m_src; }
@@ -198,6 +198,7 @@ void NoteEditor::switchTo(Mode m, const QString &reason)
     }
     setFocusProxy(activeEdit());
     if (focus) activeEdit()->setFocus();
+    if (m_l) dismissCompletions();
     emit modeChanged(m, reason);
     emit formatStateChanged();
 }

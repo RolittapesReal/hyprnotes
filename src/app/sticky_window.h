@@ -13,6 +13,8 @@ namespace hn::app {
 
 class AppController;
 class StickyHeader;
+class PanelDock;
+class DockToggle;
 namespace ui { class IconButton; class ChipButton; class FadeOverlay; }
 
 class StickyWindow : public QWidget {
@@ -39,6 +41,8 @@ public:
     ui::IconButton *popInButton() const { return m_popIn; }
     ui::ChipButton *chip() const { return m_chip; }
     StatusStrip *status() const { return m_status; }
+    DockToggle *panelButton() const { return m_panels; }      // null until a plugin registers a panel
+    PanelDock *openPanels();                                  // popup with the same panels as the organizer dock
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -63,6 +67,9 @@ private:
     ui::IconButton *m_format, *m_popIn, *m_close;
     ui::ChipButton *m_chip;
     ui::FadeOverlay *m_fade;
+    void syncPanels();
+    DockToggle *m_panels = nullptr;
+    QPointer<PanelDock> m_popup;
     bool m_transferred = false, m_titled = false;
 };
 

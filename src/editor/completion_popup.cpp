@@ -1,0 +1,200 @@
+#include "completion_popup.h"
+
+#include <QGuiApplication>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QScreen>
+#include <QWheelEvent>
+#include <QtMath>
+
+namespace hn::editor {
+
+CompletionPopup::CompletionPopup(QWidget *owner) : QWidget(owner, Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus)
+{
+    setAttribute(Qt::WA_ShowWithoutActivating);
+    setAttribute(Qt::WA_NoSystemBackground, false);
+    setFocusPolicy(Qt::NoFocus);
+    setMouseTracking(true);
+    setAutoFillBackground(true);
+}
+
+void CompletionPopup::setTheme(const hn::theme::Theme &t, const QFont &f)
+{
+    m_t = t;
+    setFont(f);
+    m_rowH = qMax(28, ((QFontMetrics(f).height() + 10) + 3) / 4 * 4);   // 4 px grid
+    update();
+}
+
+void CompletionPopup::setItems(const QList<CompletionItem> &items, const QString &query)
+{
+    m_items = items;
+    m_query = query;
+    m_cur = 0;
+    m_top = 0;
+    update();
+}
+
+int CompletionPopup::visibleRows(const QRect &avail) const
+{
+    const int fit = qMax(1, (avail.height() - 8 - 2) / m_rowH);
+    return qMax(1, qMin(qMin(count(), kMaxRows), fit));
+}
+
+QSize CompletionPopup::wantedSize(const QRect &avail) const
+{
+    const QFontMetrics fm(font());
+    int w = 0;
+    for (const auto &it : m_items) w = qMax(w, fm.horizontalAdvance(it.label) + (it.detail.isEmpty() ? 0 : 24 + fm.horizontalAdvance(it.detail)));
+    w = qBound(240, w + 12 + 12 + 6, 440);
+    w = qMin(w, qMax(80, avail.width() - 8));
+    return QSize(w, visibleRows(avail) * m_rowH + 2);
+}
+
+QRect CompletionPopup::place(const QRect &caret, const QSize &size, const QRect &avail)
+{
+    int x = qMin(caret.left(), avail.right() + 1 - size.width());
+    x = qMax(x, avail.left());
+    const int below = caret.bottom() + 1 + 2, above = caret.top() - 2 - size.height();
+    int y;
+    if (below + size.height() <= avail.bottom() + 1) y = below;
+    else if (above >= avail.top()) y = above;
+    else y = qMax(avail.top(), qMin(below, avail.bottom() + 1 - size.height()));
+    return QRect(QPoint(x, y), size);
+}
+
+void CompletionPopup::showAt(const QRect &caretGlobal)
+{
+    const QScreen *s = QGuiApplication::screenAt(caretGlobal.center());
+    if (!s) s = QGuiApplication::primaryScreen();
+    const QRect avail = s ? s->availableGeometry() : QRect(0, 0, 1024, 768);
+    m_rows = visibleRows(avail);
+    setGeometry(place(caretGlobal, wantedSize(avail), avail));
+    ensureVisible();
+    if (!isVisible()) show();
+    update();
+}
+
+void CompletionPopup::ensureVisible()
+{
+    const int rows = qMax(1, (height() - 2) / m_rowH);
+    if (m_cur < m_top) m_top = m_cur;
+    if (m_cur >= m_top + rows) m_top = m_cur - rows + 1;
+    m_top = qBound(0, m_top, qMax(0, count() - rows));
+}
+
+void CompletionPopup::step(int d)
+{
+    if (!count()) return;
+    m_cur = ((m_cur + d) % count() + count()) % count();   // wraps like a menu
+    ensureVisible();
+    update();
+}
+
+void CompletionPopup::page(int dir)
+{
+    if (!count()) return;
+    const int rows = qMax(1, (height() - 2) / m_rowH);
+    m_cur = qBound(0, m_cur + dir * rows, count() - 1);
+    ensureVisible();
+    update();
+}
+
+int CompletionPopup::rowAt(const QPoint &p) const
+{
+    const int r = m_top + (p.y() - 1) / m_rowH;
+    return p.y() >= 1 && r >= 0 && r < count() ? r : -1;
+}
+
+void CompletionPopup::mousePressEvent(QMouseEvent *e)
+{
+    const int r = rowAt(e->position().toPoint());
+    if (r >= 0 && picked) picked(r);
+    e->accept();
+}
+
+void CompletionPopup::mouseMoveEvent(QMouseEvent *e)
+{
+    const int r = rowAt(e->position().toPoint());
+    if (r >= 0 && r != m_cur) { m_cur = r; update(); }
+}
+
+void CompletionPopup::wheelEvent(QWheelEvent *e)
+{
+    const int rows = qMax(1, (height() - 2) / m_rowH);
+    const int d = e->angleDelta().y() > 0 ? -1 : (e->angleDelta().y() < 0 ? 1 : 0);
+    m_top = qBound(0, m_top + d, qMax(0, count() - rows));
+    update();
+    e->accept();
+}
+
+// Characters of `label` to emphasise: first case-insensitive substring hit of the query, else an in-order subsequence.
+static QList<bool> matchMask(const QString &label, const QString &q)
+{
+    QList<bool> m(label.size(), false);
+    if (q.isEmpty()) return m;
+    const int at = label.indexOf(q, 0, Qt::CaseInsensitive);
+    if (at >= 0) { for (int i = 0; i < q.size(); ++i) m[at + i] = true; return m; }
+    int qi = 0;
+    for (int i = 0; i < label.size() && qi < q.size(); ++i)
+        if (label[i].toLower() == q[qi].toLower()) { m[i] = true; ++qi; }
+    if (qi < q.size()) m.fill(false);
+    return m;
+}
+
+void CompletionPopup::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::TextAntialiasing);
+    p.fillRect(rect(), m_t.surface);
+    const int rows = qMax(1, (height() - 2) / m_rowH);
+    QFont bold = font();
+    bold.setWeight(QFont::DemiBold);
+    const QFontMetrics fm(font());
+    for (int r = 0; r < rows && m_top + r < count(); ++r) {
+        const int i = m_top + r;
+        const QRect row(1, 1 + r * m_rowH, width() - 2, m_rowH);
+        const bool sel = i == m_cur;
+        if (sel) {
+            p.fillRect(row, m_t.dark ? m_t.bg.lighter(125) : m_t.bg.darker(104));
+            p.fillRect(QRect(row.left(), row.top(), 2, row.height()), m_t.accent);
+        }
+        const auto &it = m_items[i];
+        const int rightPad = (count() > rows ? 8 : 4);
+        int detailW = 0;
+        if (!it.detail.isEmpty()) {
+            detailW = qMin(fm.horizontalAdvance(it.detail), row.width() * 9 / 20);
+            p.setPen(m_t.muted);
+            p.setFont(font());
+            p.drawText(QRect(row.right() - rightPad - detailW + 1, row.top(), detailW, row.height()), Qt::AlignVCenter | Qt::AlignRight,
+                       fm.elidedText(it.detail, Qt::ElideRight, detailW));
+        }
+        const int x0 = row.left() + 12, maxW = row.right() - rightPad - detailW - (detailW ? 12 : 0) - x0;
+        p.save();
+        p.setClipRect(QRect(x0, row.top(), qMax(0, maxW), row.height()));
+        const QList<bool> mask = matchMask(it.label, m_query);
+        int x = x0, a = 0;
+        while (a < it.label.size()) {
+            int b = a;
+            while (b < it.label.size() && mask[b] == mask[a]) ++b;
+            const QString run = it.label.mid(a, b - a);
+            const bool hl = mask[a];
+            p.setFont(hl ? bold : font());
+            p.setPen(hl ? m_t.accent : m_t.text);
+            const int w = QFontMetrics(p.font()).horizontalAdvance(run);
+            p.drawText(QRect(x, row.top(), w + 2, row.height()), Qt::AlignVCenter | Qt::AlignLeft, run);
+            x += w;
+            a = b;
+        }
+        p.restore();
+    }
+    if (count() > rows) {   // thin scroll indicator
+        const int track = height() - 2, th = qMax(12, track * rows / count()), ty = 1 + (track - th) * m_top / qMax(1, count() - rows);
+        p.fillRect(QRect(width() - 3, ty, 2, th), m_t.border);
+    }
+    p.setPen(m_t.border);
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+}
+
+} // namespace hn::editor

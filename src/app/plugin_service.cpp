@@ -31,6 +31,8 @@ PluginService::PluginService(AppController *c, QString dir, PluginHooks hooks) :
 
 PluginService::~PluginService() {
     for (auto *b : std::as_const(m_bridges)) { b->detach(); delete b; }
+    m_mgr.reset();   // before the bridges it points at
+    quiesce();
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -104,7 +106,10 @@ void PluginService::create() {
     ManagerConfig cfg;
     cfg.pluginsDir = m_dir;
     cfg.stateDir = m_c->stateDir();
-    cfg.bridges = {m_lib.get(), m_ui.get(), m_net.get(), m_clip.get(), m_theme.get()};
+    m_hub = std::make_unique<PanelHub>();
+    m_hooks2 = std::make_unique<EditorHooks>(this);
+    connect(m_hub.get(), &PanelHub::panelsChanged, this, &PluginService::panelsChanged);
+    cfg.bridges = {m_lib.get(), m_ui.get(), m_net.get(), m_clip.get(), m_theme.get(), m_hub.get(), m_hooks2.get()};
     cfg.logger = [](int, const QString &id, const QString &msg) { qWarning("[plugin %s] %s", qPrintable(id), qPrintable(msg)); };
     cfg.native = m_native.get();
     m_mgr = std::make_unique<PluginManager>(cfg);
@@ -177,6 +182,7 @@ void PluginService::attach(NoteSession *s) {
 void PluginService::release(NoteSession *s) {
     if (!m_mgr) return;
     post(QStringLiteral("note.closed"), s);
+    if (m_hooks2) m_hooks2->forget(s);
     if (auto *b = m_bridges.take(s)) {
         m_mgr->detachNote(b);   // flushes coalesced events that still reference it
         b->detach();
@@ -195,6 +201,7 @@ void PluginService::refreshSessions() {
         NoteSession *s = m_c->session(rel);
         if (!s) continue;
         s->toolbar()->setPluginButtons(buttons);
+        if (m_hooks2) m_hooks2->apply(s);
         if (!triggers) { s->editor()->setTriggerHandler({}); continue; }
         s->editor()->setTriggerHandler([this, s](const QString &token) -> std::optional<hn::editor::TriggerResult> {
             if (!m_mgr) return std::nullopt;
@@ -206,6 +213,35 @@ void PluginService::refreshSessions() {
             return hn::editor::TriggerResult{int(token.size()), m->replacement};
         });
     }
+}
+
+// ---------------------------------------------------------------- panels
+void PluginService::setPanelsShown(QObject *owner, const QStringList &qids) {
+    if (!m_mgr) return;
+    QSet<QString> before;
+    for (const auto &v : std::as_const(m_shown)) before |= v;
+    if (qids.isEmpty()) m_shown.remove(owner); else m_shown[owner] = QSet<QString>(qids.begin(), qids.end());
+    QSet<QString> after;
+    for (const auto &v : std::as_const(m_shown)) after |= v;
+    auto split = [](const QString &q, QString *p, QString *i) { const int c = int(q.indexOf(QLatin1Char(':'))); *p = q.left(c); *i = q.mid(c + 1); };
+    for (const auto &q : before - after) { QString p, i; split(q, &p, &i); m_mgr->setPanelActive(p, i, false); }
+    for (const auto &q : after - before) { QString p, i; split(q, &p, &i); m_mgr->setPanelActive(p, i, true); }
+}
+
+bool PluginService::renderPanel(const QString &qid, NoteSession *s) {
+    if (!m_mgr) return false;
+    const int c = int(qid.indexOf(QLatin1Char(':')));
+    QString err;
+    const bool ok = m_mgr->refreshPanel(qid.left(c), qid.mid(c + 1), s ? bridgeFor(s) : nullptr, &err);   // errors reach the hub as the panel's error text
+    return ok;
+}
+
+void PluginService::panelClick(const QString &qid, int token, NoteSession *s) {
+    if (!m_mgr) return;
+    const int c = int(qid.indexOf(QLatin1Char(':')));
+    QString err;
+    if (!m_mgr->panelClick(qid.left(c), qid.mid(c + 1), token, s ? bridgeFor(s) : nullptr, &err) && !err.isEmpty()) m_c->announce(tr("%1: %2").arg(nameOf(qid.left(c)), err));
+    m_mgr->flushPanels();   // a click that called hn.panel_refresh is answered now, not after the coalescing delay
 }
 
 // ---------------------------------------------------------------- command model

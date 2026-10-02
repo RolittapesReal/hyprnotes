@@ -1,4 +1,5 @@
 #include "md_io.h"
+#include "hn/editor/wiki_links.h"
 
 #include <QGuiApplication>
 #include <QHash>
@@ -270,8 +271,14 @@ QString escapeRun(const QString &t)
     static const QRegularExpression entity(QStringLiteral("^&[A-Za-z0-9#]+;"));
     QString o;
     o.reserve(t.size() + 4);
+    // Wiki links ([[a]], ![[a]]) are plain text to CommonMark: keep their brackets unescaped so a visual-mode save does not
+    // turn every link into "\[\[a\]\]" (which the link index would no longer see).
+    QList<QPair<int, int>> wiki;
+    for (const LinkRange &r : scanWikiLinks(t)) wiki.append({r.start, r.end});
+    auto inWiki = [&](int k) { for (const auto &w : wiki) if (k >= w.first && k < w.second) return true; return false; };
     for (int k = 0; k < t.size(); ++k) {
         const QChar c = t[k];
+        if ((c == QLatin1Char('[') || c == QLatin1Char(']')) && !wiki.isEmpty() && inWiki(k)) { o += c; continue; }
         switch (c.unicode()) {
         case '\\': case '`': case '*': case '[': case ']': case '<': case '~': o += QLatin1Char('\\'); o += c; break;
         case '_':

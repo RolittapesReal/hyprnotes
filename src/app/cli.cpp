@@ -15,6 +15,7 @@ using hn::platform::Action;
 CliOptions parseCli(const QStringList &args) {
     CliOptions o;
     QString seen;
+    bool apiSeen = false;
     for (int i = 0; i < args.size(); ++i) {
         const QString &a = args[i];
         Action act;
@@ -35,6 +36,15 @@ CliOptions parseCli(const QStringList &args) {
             plug = true;
         }
         if (plug) continue;
+        if (a == "--api") {
+            bool ok = false;
+            const int v = i + 1 < args.size() ? args[i + 1].toInt(&ok) : 0;
+            if (!ok || v < 1 || v > hn::plugins::kApiVersionMax) { o.error = QString("--api needs 1 or %1.").arg(hn::plugins::kApiVersionMax); return o; }
+            o.newApi = v;
+            ++i;
+            apiSeen = true;
+            continue;
+        }
         if (a == "--yes-i-trust-this-plugin") { o.trustPlugin = true; continue; }
         if (a == "--help" || a == "-h") { o.help = true; continue; }
         if (a == "--version") { o.version = true; continue; }
@@ -51,6 +61,7 @@ CliOptions parseCli(const QStringList &args) {
         seen = a;
         o.action = act;
     }
+    if (apiSeen && o.newPlugin.isEmpty()) { o.error = "--api only makes sense with --new-plugin NAME."; return o; }
     if (o.trustPlugin && o.installPlugin.isEmpty()) o.error = "--yes-i-trust-this-plugin only makes sense with --install-plugin PATH.";
     if (o.pluginAction() && !seen.isEmpty()) o.error = QString("%1 cannot be combined with %2.").arg(seen, o.installPlugin.isEmpty() ? "a plugin option" : "--install-plugin");
     return o;
@@ -101,7 +112,7 @@ int runPluginCli(const CliOptions &o, QTextStream &in, QTextStream &out, QTextSt
         while (id.endsWith('-')) id.chop(1);
         const QString dir = QDir::current().filePath(id.isEmpty() ? QStringLiteral("plugin") : id);
         QString why;
-        if (!createTemplate(dir, o.newPlugin, &why)) { err << "hyprnotes: " << why << "\n"; return 1; }
+        if (!createTemplate(dir, o.newPlugin, &why, o.newApi)) { err << "hyprnotes: " << why << "\n"; return 1; }
         out << "Created " << dir << "\n  edit main.lua, then:\n  hyprnotes --check-plugin " << dir << "\n  hyprnotes --pack-plugin " << dir
             << "\n  hyprnotes --install-plugin " << dir << "\n";
         return 0;
@@ -181,7 +192,7 @@ QString helpText() {
         "  --import-theme FILE  import a theme (Hyprnotes JSON, base16 YAML, VS Code JSON), select it, and exit\n"
         "  --install-plugin PATH  install a plugin (.hnplugin or folder); shows its permissions and asks you to type its id\n"
         "  --yes-i-trust-this-plugin  with --install-plugin: skip typing the id (you have reviewed the plugin)\n"
-        "  --new-plugin NAME    scaffold a working script plugin in ./NAME and exit\n"
+        "  --new-plugin NAME    scaffold a working script plugin in ./NAME and exit (add --api 2 for the note index / panel / completion API)\n"
         "  --check-plugin DIR   validate a plugin folder exactly as the installer would and exit\n"
         "  --pack-plugin DIR    pack a plugin folder into ID-VERSION.hnplugin and exit\n"
         "  --print-hyprland-rules  print the installed Hyprland rule snippets (path and contents) and exit\n"

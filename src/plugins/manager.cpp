@@ -34,7 +34,16 @@ PluginManager::PluginManager(ManagerConfig cfg, QObject *parent)
     timer_.setSingleShot(true);
     timer_.setInterval(cfg_.coalesceMs);
     connect(&timer_, &QTimer::timeout, this, &PluginManager::flushEvents);
-    connect(&registry_, &PluginRegistry::changed, this, [this] { saveCache(); emit pluginsChanged(); });
+    panelTimer_.setSingleShot(true);
+    panelTimer_.setInterval(cfg_.coalesceMs);
+    connect(&panelTimer_, &QTimer::timeout, this, &PluginManager::flushPanels);
+    connect(host_.get(), &LuaPluginHost::panelRefreshRequested, this, [this](const QString &pid, const QString &panelId, NoteBridge *note) {
+        const QString q = pid + QLatin1Char(':') + panelId;
+        if (!activePanels_.contains(q)) return;  // nobody is looking: nothing to do
+        pendingPanels_[q] = note;
+        if (!panelTimer_.isActive()) panelTimer_.start();
+    });
+    connect(&registry_, &PluginRegistry::changed, this, [this] { saveCache(); syncPanels(); emit pluginsChanged(); });
     connect(host_.get(), &LuaPluginHost::autoDisabled, this, [this](const QString &id, const QString &why) {
         if (auto it = entries_.find(id); it != entries_.end()) it->lastError = why;
         registry_.remove(id);
@@ -57,6 +66,27 @@ void PluginManager::saveCache() {
     QDir().mkpath(cfg_.stateDir);
     QSaveFile f(cfg_.stateDir + QStringLiteral("/plugins-registry.json"));
     if (f.open(QIODevice::WriteOnly)) { f.write(QJsonDocument(c).toJson(QJsonDocument::Compact)); f.commit(); }
+}
+
+// Announces panel (un)registrations to the PanelBridge. Driven by registry changes, so cached registrations show up without Lua.
+void PluginManager::syncPanels() {
+    QMap<QString, QString> now;
+    QMap<QString, PanelReg> regs;
+    for (const auto &p : registry_.panels()) { now[p.qualifiedId()] = p.title + QLatin1Char('\x1f') + p.icon; regs[p.qualifiedId()] = p; }
+    auto *pb = cfg_.bridges.panel;
+    for (auto it = shownPanels_.begin(); it != shownPanels_.end();) {
+        if (!now.contains(it.key())) {
+            if (pb) pb->removePanel(it.key());
+            pendingPanels_.remove(it.key());
+            activePanels_.remove(it.key());
+            it = shownPanels_.erase(it);
+        } else ++it;
+    }
+    for (auto it = now.begin(); it != now.end(); ++it) {
+        if (shownPanels_.value(it.key()) == it.value() && shownPanels_.contains(it.key())) continue;
+        shownPanels_[it.key()] = it.value();
+        if (pb) pb->showPanel(it.key(), regs[it.key()].title, regs[it.key()].icon);
+    }
 }
 
 void PluginManager::activateEntry(const QString &id, Entry &e) {
@@ -314,14 +344,26 @@ bool PluginManager::runCommand(const QString &q, NoteBridge *n, QString *e) { re
 bool PluginManager::runToolbarButton(const QString &q, NoteBridge *n, QString *e) { return run(q, LuaPluginHost::Kind::Toolbar, n, e); }
 bool PluginManager::runMenuItem(const QString &q, NoteBridge *n, QString *e) { return run(q, LuaPluginHost::Kind::Menu, n, e); }
 
+QList<PanelReg> PluginManager::activePanelsFor(const QString &event) const {
+    QList<PanelReg> r;
+    if (activePanels_.isEmpty()) return r;
+    for (const auto &p : registry_.panelsRefreshingOn(event))
+        if (activePanels_.contains(p.qualifiedId()) && trust_.record(p.pluginId).enabled) r << p;
+    return r;
+}
+
 void PluginManager::deliverNow(const QString &event, const QString &arg, NoteBridge *note) {
     for (const auto &id : registry_.subscribers(event)) host_->deliver(id, event, arg, note);
+    for (const auto &pr : activePanelsFor(event)) {  // panels the UI shows: let on_event see it, then re-render
+        if (pr.onEvent) host_->deliverPanelEvent(pr.pluginId, pr.id, event, arg, note);
+        refreshPanel(pr.pluginId, pr.id, note);
+    }
     for (auto it = entries_.constBegin(); it != entries_.constEnd(); ++it)
         if (it->m.tier == Tier::Native && trust_.record(it.key()).enabled) native_->postEvent(it.key(), event, arg);
 }
 
 void PluginManager::post(const QString &event, const QString &arg, NoteBridge *note) {
-    bool any = !registry_.subscribers(event).isEmpty();
+    bool any = !registry_.subscribers(event).isEmpty() || !activePanelsFor(event).isEmpty();
     if (!any)
         for (auto it = entries_.constBegin(); it != entries_.constEnd() && !any; ++it) any = it->m.tier == Tier::Native && trust_.record(it.key()).enabled;
     if (!any) return;  // nobody listens: no allocation, no timer
@@ -343,7 +385,9 @@ void PluginManager::flushEvents() {
 
 void PluginManager::detachNote(NoteBridge *note) {
     for (const auto &p : std::as_const(pending_))
-        if (p.note == note) { flushEvents(); return; }
+        if (p.note == note) { flushEvents(); break; }
+    for (const auto &n : std::as_const(pendingPanels_))
+        if (n == note) { flushPanels(); return; }
 }
 
 QString PluginManager::preSave(const QString &text, NoteBridge *note) {
@@ -360,6 +404,80 @@ std::optional<TriggerMatch> PluginManager::matchTrigger(const QString &before, N
     TriggerMatch m{best.pluginId, best.pattern, QString()};
     if (!host_->runTrigger(best.pluginId, best.pattern, note, &m.replacement)) return std::nullopt;
     return m;
+}
+
+// ================= API 2 =================
+bool PluginManager::renderPanel(const QString &pid, const QString &panelId, NoteBridge *note, QList<PanelBlock> *out, QString *err) {
+    auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+    const auto it = entries_.constFind(pid);
+    if (it == entries_.constEnd() || it->m.tier != Tier::Script || !trust_.record(pid).enabled) return fail(QStringLiteral("plugin '%1' is not enabled").arg(pid));
+    bool known = false;
+    for (const auto &p : registry_.panels(pid)) known |= p.id == panelId;
+    if (!known) return fail(QStringLiteral("unknown panel '%1:%2'").arg(pid, panelId));
+    return host_->renderPanel(pid, panelId, note, out, err);
+}
+
+bool PluginManager::refreshPanel(const QString &pid, const QString &panelId, NoteBridge *note, QString *err) {
+    QList<PanelBlock> blocks;
+    QString e;
+    const bool ok = renderPanel(pid, panelId, note, &blocks, &e);
+    if (err) *err = e;
+    if (auto *pb = cfg_.bridges.panel) pb->updatePanel(pid + QLatin1Char(':') + panelId, ok ? blocks : QList<PanelBlock>(), ok ? QString() : e);
+    return ok;
+}
+
+bool PluginManager::panelClick(const QString &pid, const QString &panelId, int token, NoteBridge *note, QString *err) {
+    auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+    const auto it = entries_.constFind(pid);
+    if (it == entries_.constEnd() || !trust_.record(pid).enabled) return fail(QStringLiteral("plugin '%1' is not enabled").arg(pid));
+    return host_->panelClick(pid, panelId, token, note, err);
+}
+
+void PluginManager::setPanelActive(const QString &pid, const QString &panelId, bool active) {
+    const QString q = pid + QLatin1Char(':') + panelId;
+    if (active) activePanels_.insert(q);
+    else { activePanels_.remove(q); pendingPanels_.remove(q); }
+}
+
+void PluginManager::flushPanels() {
+    panelTimer_.stop();
+    const auto p = pendingPanels_;
+    pendingPanels_.clear();
+    for (auto it = p.begin(); it != p.end(); ++it) {
+        const int c = int(it.key().indexOf(QLatin1Char(':')));
+        if (c > 0 && activePanels_.contains(it.key())) refreshPanel(it.key().left(c), it.key().mid(c + 1), it.value());
+    }
+}
+
+QList<CompletionItem> PluginManager::complete(const QString &trigger, const QString &query, NoteBridge *note) {
+    QList<CompletionItem> all;
+    for (const auto &c : registry_.completions(trigger)) {
+        if (all.size() >= 50) break;
+        const auto it = entries_.constFind(c.pluginId);
+        if (it == entries_.constEnd() || !trust_.record(c.pluginId).enabled) continue;
+        for (const auto &item : host_->complete(c.pluginId, c.id, query, note)) {
+            if (all.size() >= 50) break;
+            all << item;
+        }
+    }
+    return all;
+}
+void PluginManager::requestCompletion(quint64 token, const QString &trigger, const QString &query, NoteBridge *note) {
+    const auto items = complete(trigger, query, note);
+    if (auto *e = cfg_.bridges.editor) e->completionReply(token, items);
+}
+
+bool PluginManager::activateLink(const LinkActivation &ref, NoteBridge *note) {
+    for (const auto &h : registry_.linkHandlers()) {
+        const auto it = entries_.constFind(h.pluginId);
+        if (it == entries_.constEnd() || !trust_.record(h.pluginId).enabled) continue;
+        if (host_->activateLink(h.pluginId, ref, note)) return true;
+    }
+    return false;
+}
+void PluginManager::requestLinkActivation(quint64 token, const LinkActivation &ref, NoteBridge *note) {
+    const bool handled = activateLink(ref, note);
+    if (auto *e = cfg_.bridges.editor) e->linkActivationReply(token, handled);
 }
 
 }  // namespace hn::plugins

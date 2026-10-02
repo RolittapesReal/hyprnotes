@@ -9,7 +9,12 @@
 namespace hn::plugins {
 
 QStringList knownPermissions() {
-    return {"note.read", "note.edit", "notes.read", "notes.write", "ui", "storage", "clipboard", "network", "theme", "native"};
+    return {"note.read", "note.edit", "notes.read", "notes.write", "ui", "storage", "clipboard", "network", "theme", "native",
+            "notes.index", "ui.panel", "editor.complete", "editor.links"};
+}
+int permissionMinApi(const QString &p) {
+    static const QSet<QString> v2{"notes.index", "ui.panel", "editor.complete", "editor.links"};
+    return v2.contains(p) ? 2 : 1;
 }
 bool isDangerousPermission(const QString &p) {
     static const QSet<QString> d{"network", "notes.write", "clipboard", "theme", "native"};
@@ -26,13 +31,18 @@ QString permissionDescription(const QString &p) {
         {"clipboard", "Read and replace your clipboard contents"},
         {"network", "Send and receive data over HTTPS with the hosts it lists"},
         {"theme", "Change theme colours"},
-        {"native", "Run native code with full access to your account (not sandboxed)"}};
+        {"native", "Run native code with full access to your account (not sandboxed)"},
+        {"notes.index", "Read link, tag and task data about all notes"},
+        {"ui.panel", "Show its own panel next to your notes"},
+        {"editor.complete", "Offer completion suggestions while you type"},
+        {"editor.links", "Handle clicks on [[links]] in your notes"}};
     return d.value(p, QStringLiteral("Unknown permission"));
 }
 
 QList<PermissionInfo> permissionTable() {
     static const QHash<QString, QString> risk{{"note.read", "medium"}, {"note.edit", "medium"}, {"notes.read", "medium"}, {"notes.write", "high"},
-                                              {"ui", "low"}, {"storage", "low"}, {"clipboard", "high"}, {"network", "high"}, {"theme", "medium"}, {"native", "critical"}};
+                                              {"ui", "low"}, {"storage", "low"}, {"clipboard", "high"}, {"network", "high"}, {"theme", "medium"}, {"native", "critical"},
+                                              {"notes.index", "medium"}, {"ui.panel", "low"}, {"editor.complete", "low"}, {"editor.links", "medium"}};
     QList<PermissionInfo> t;
     for (const auto &p : knownPermissions()) t.append({p, permissionDescription(p), risk.value(p, QStringLiteral("high")), isDangerousPermission(p)});
     return t;
@@ -130,11 +140,11 @@ bool parseManifest(const QByteArray &json, const QString &dir, Manifest *out, QL
     }
     // api
     const auto av = o.value(QLatin1String("api"));
-    if (!av.isDouble() || av.toDouble() != double(int(av.toDouble()))) err(QStringLiteral("field 'api' must be the integer %1").arg(kApiVersion));
+    if (!av.isDouble() || av.toDouble() != double(int(av.toDouble()))) err(QStringLiteral("field 'api' must be the integer %1 or %2").arg(kApiVersion).arg(kApiVersionMax));
     else {
         m.api = av.toInt();
-        if (m.api > kApiVersion) err(QStringLiteral("plugin needs plugin API %1 but this app supports API %2").arg(m.api).arg(kApiVersion));
-        else if (m.api != kApiVersion) err(QStringLiteral("unsupported plugin API %1 (this app supports API %2)").arg(m.api).arg(kApiVersion));
+        if (m.api > kApiVersionMax) err(QStringLiteral("plugin needs plugin API %1 but this app supports API %2").arg(m.api).arg(kApiVersionMax));
+        else if (m.api < kApiVersion) err(QStringLiteral("unsupported plugin API %1 (this app supports API %2 to %3)").arg(m.api).arg(kApiVersion).arg(kApiVersionMax));
     }
     // tier
     const auto tv = o.value(QLatin1String("tier"));
@@ -159,6 +169,7 @@ bool parseManifest(const QByteArray &json, const QString &dir, Manifest *out, QL
             const QString s = x.toString();
             if (!x.isString() || !known.contains(s)) err(QStringLiteral("unknown permission '%1' (known: %2)").arg(x.isString() ? s : QStringLiteral("<non-string>"), known.join(QStringLiteral(", "))));
             else if (m.permissions.contains(s)) err(QStringLiteral("permission '%1' is listed twice").arg(s));
+            else if (m.api >= kApiVersion && permissionMinApi(s) > m.api) err(QStringLiteral("permission '%1' needs \"api\": %2 in plugin.json").arg(s).arg(permissionMinApi(s)));
             else m.permissions << s;
         }
         if (m.tier == Tier::Script && m.permissions.contains(QStringLiteral("native"))) err(QStringLiteral("script plugins cannot request the 'native' permission"));

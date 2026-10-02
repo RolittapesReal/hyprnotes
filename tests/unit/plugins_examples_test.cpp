@@ -56,7 +56,7 @@ class ExamplesTest : public QObject {
     }
 private slots:
     void everyExampleValidatesAndHasAReadme() {
-        const QStringList ids{"word-count", "insert-date", "sort-lines", "markdown-toc", "title-case-selection", "daily-note", "snippets"};
+        const QStringList ids{"word-count", "insert-date", "sort-lines", "markdown-toc", "title-case-selection", "daily-note", "snippets", "backlinks-panel", "link-completion", "open-tasks"};
         QCOMPARE(QDir(QStringLiteral(HN_PLUGIN_EXAMPLES)).entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), ids.size());
         for (const auto &id : ids) {
             const auto c = checkDirectory(example(id));
@@ -68,7 +68,7 @@ private slots:
         }
     }
     void everyExampleInstallsFromAnArchiveToo() {
-        for (const QString &id : {"word-count", "insert-date", "sort-lines", "markdown-toc", "title-case-selection", "daily-note", "snippets"}) {
+        for (const QString &id : {"word-count", "insert-date", "sort-lines", "markdown-toc", "title-case-selection", "daily-note", "snippets", "backlinks-panel", "link-completion", "open-tasks"}) {
             Rig r;
             const QString pkg = r.env.tmp.path() + "/" + id + ".hnplugin";
             QList<PluginError> errs;
@@ -80,7 +80,8 @@ private slots:
             QVERIFY(!r.mgr->enable(id, &err));
             QVERIFY(r.mgr->consent(id, r.mgr->info(id).manifest.permissions));
             QVERIFY(r.mgr->enable(id, &err));
-            QVERIFY2(!r.mgr->registry()->commands().isEmpty() || !r.mgr->registry()->triggers().isEmpty(), qPrintable(id));
+            QVERIFY2(!r.mgr->registry()->commands().isEmpty() || !r.mgr->registry()->triggers().isEmpty() || !r.mgr->registry()->panels().isEmpty() ||
+                         !r.mgr->registry()->completions().isEmpty(), qPrintable(id));
         }
     }
     void wordCount() {
@@ -322,6 +323,121 @@ private slots:
         QVERIFY(x_audit(r).contains("auto-disable"));
         QVERIFY(r.lib.calls.isEmpty() && r.clip.v == "clip" && r.theme.sets.isEmpty());
         QVERIFY(!QFileInfo::exists("/tmp/hn-evil-demo-should-not-exist"));
+    }
+    void backlinksPanel() {
+        ExRig x;
+        x.use("backlinks-panel");
+        auto &r = x.r;
+        QCOMPARE(r.mgr->info("backlinks-panel").manifest.api, 2);
+        QCOMPARE(r.mgr->registry()->panels().size(), 1);
+        QCOMPARE(r.mgr->loadedStates(), 0);
+        QList<PanelBlock> b;
+        QString err;
+        QVERIFY2(r.mgr->renderPanel("backlinks-panel", "backlinks", &r.note, &b, &err), qPrintable(err));  // note is notes/a.md
+        QCOMPARE(b.size(), 2);
+        QCOMPARE(b[0].text, QString("2 backlinks"));
+        QCOMPARE(b[1].items.size(), 2);
+        QCOMPARE(b[1].items[0].title, QString("b"));
+        QCOMPARE(b[1].items[0].subtitle, QString("links to [[a|A]]"));
+        QCOMPARE(b[1].items[0].path, QString("b.md"));
+        QCOMPARE(b[1].items[0].line, 2);
+        QCOMPARE(b[1].items[1].path, QString("c.md"));
+        QCOMPARE(r.lib.backlinkLimit, 50);
+        QVERIFY2(r.mgr->panelClick("backlinks-panel", "backlinks", b[1].items[1].click, &r.note, &err), qPrintable(err));
+        QCOMPARE(r.lib.opened, QStringList{"c.md@organizer"});
+        // setting is capped at 150
+        QVERIFY(r.mgr->host()->setSetting("backlinks-panel", "max_rows", 100000));
+        QVERIFY(r.mgr->renderPanel("backlinks-panel", "backlinks", &r.note, &b, &err));
+        QCOMPARE(r.lib.backlinkLimit, 150);
+        // no backlinks / no note / index failures: friendly empty blocks, never an error
+        r.note.p = "notes/lonely.md";
+        QVERIFY(r.mgr->renderPanel("backlinks-panel", "backlinks", &r.note, &b, &err));
+        QCOMPARE(b.size(), 1); QCOMPARE(b[0].type, QString("empty")); QVERIFY(b[0].text.contains("Nothing links"));
+        QVERIFY(r.mgr->renderPanel("backlinks-panel", "backlinks", nullptr, &b, &err));
+        QVERIFY(b[0].text.contains("Open a note"));
+        r.note.p = "notes/a.md";
+        r.lib.forced = BridgeStatus::Timeout;
+        QVERIFY(r.mgr->renderPanel("backlinks-panel", "backlinks", &r.note, &b, &err));
+        QVERIFY2(b[0].text.contains("not available") && b[0].text.contains("timeout"), qPrintable(b[0].text));
+        QCOMPARE(r.mgr->trust()->record("backlinks-panel").failures, 0);
+        // refresh when a note is saved, only while shown
+        r.lib.forced = BridgeStatus::Ok;
+        r.mgr->setPanelActive("backlinks-panel", "backlinks", true);
+        const int before = r.panel.updates;
+        r.mgr->post("note.saved", "notes/a.md", &r.note);
+        QCOMPARE(r.panel.updates, before + 1);
+        QCOMPARE(r.panel.blocks["backlinks-panel:backlinks"].size(), 2);
+        QVERIFY(!x.audit().contains("\"failure\"") && !x.audit().contains("permission denied"));  // (the forced timeout above is audited as denied, by design)
+        QVERIFY(r.note.ops.isEmpty());  // never edits
+    }
+    void linkCompletion() {
+        ExRig x;
+        struct DupLib : FakeIndexLib {
+            QList<NoteInfo> list(const QString &q) override { calls << "list:" + q; return {{"x/dup.md", "Dup"}, {"y/dup.md", "Dup"}, {"plain.md", "Plain"}}; }
+        } lib;
+        lib.resolves["dup"] = {"ambiguous", "", {"x/dup.md", "y/dup.md"}};
+        lib.resolves["plain"] = {"resolved", "plain.md", {}};
+        x.r.mgr->host()->env().bridges.library = &lib;
+        x.use("link-completion");
+        auto &r = x.r;
+        QCOMPARE(r.mgr->registry()->completions("[[").size(), 1);
+        QCOMPARE(r.mgr->loadedStates(), 0);
+        auto items = r.mgr->complete("[[", "du", &r.note);
+        QCOMPARE(items.size(), 3);
+        QCOMPARE(items[0].label, QString("Dup"));
+        QCOMPARE(items[0].detail, QString("x/dup.md"));
+        QCOMPARE(items[0].insert, QString("x/dup]]"));   // ambiguous: folder-qualified
+        QCOMPARE(items[1].insert, QString("y/dup]]"));
+        QCOMPARE(items[2].insert, QString("plain]]"));   // unique: plain name
+        QVERIFY(lib.calls.contains("list:du"));
+        // index timeouts degrade to plain names, they do not break the popup
+        lib.forced = BridgeStatus::Timeout;
+        items = r.mgr->complete("[[", "du", &r.note);
+        QCOMPARE(items.size(), 3);
+        QCOMPARE(items[0].insert, QString("dup]]"));
+        QCOMPARE(r.mgr->trust()->record("link-completion").failures, 0);
+        // other triggers are not ours
+        QVERIFY(r.mgr->complete("/", "", &r.note).isEmpty());
+        QVERIFY(r.note.ops.isEmpty());
+    }
+    void openTasks() {
+        ExRig x;
+        x.use("open-tasks");
+        auto &r = x.r;
+        QList<PanelBlock> b;
+        QString err;
+        QVERIFY2(r.mgr->renderPanel("open-tasks", "tasks", &r.note, &b, &err), qPrintable(err));
+        QCOMPARE(b.size(), 3);
+        QCOMPARE(b[0].text, QString("2 open tasks"));
+        QCOMPARE(b[1].type, QString("button"));
+        QCOMPARE(b[2].items.size(), 2);
+        QCOMPARE(b[2].items[0].title, QString("buy milk"));
+        QCOMPARE(b[2].items[0].subtitle, QString("inbox/todo.md"));
+        QCOMPARE(b[2].items[1].line, 12);
+        // the query was a plain, validated spec
+        QCOMPARE(r.lib.querySpecs.size(), 1);
+        const auto spec = r.lib.querySpecs[0];
+        QCOMPARE(spec["from"].toString(), QString("tasks"));
+        QCOMPARE(spec["limit"].toInt(), 150);
+        QCOMPARE(spec["where"].toArray()[0].toObject()["field"].toString(), QString("done"));
+        QCOMPARE(spec["where"].toArray()[0].toObject()["value"].toBool(), false);
+        QVERIFY2(r.mgr->panelClick("open-tasks", "tasks", b[2].items[1].click, &r.note, &err), qPrintable(err));
+        QCOMPARE(r.lib.opened, QStringList{"work/plan.md@organizer"});
+        // Refresh button -> hn.panel_refresh -> queued render (only while shown)
+        r.mgr->setPanelActive("open-tasks", "tasks", true);
+        QVERIFY(r.mgr->panelClick("open-tasks", "tasks", b[1].click, &r.note, &err));
+        QCOMPARE(r.panel.updates, 0);
+        r.mgr->flushPanels();
+        QCOMPARE(r.panel.updates, 1);
+        // empty and failing index
+        r.lib.queryRows = QJsonArray();
+        QVERIFY(r.mgr->renderPanel("open-tasks", "tasks", &r.note, &b, &err));
+        QCOMPARE(b[0].text, QString("No open tasks. Nice."));
+        r.lib.forced = BridgeStatus::Timeout;
+        QVERIFY(r.mgr->renderPanel("open-tasks", "tasks", &r.note, &b, &err));
+        QVERIFY(b[0].text.contains("not available"));
+        QVERIFY(!x.audit().contains("\"failure\""));
+        QVERIFY(r.note.ops.isEmpty());
     }
     void evilDemoCannotTouchOtherPlugins() {
         Rig r;

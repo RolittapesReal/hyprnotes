@@ -7,7 +7,8 @@ foreach(dep core theme)
 endforeach()
 
 add_library(hn_editor STATIC history.cpp md_io.cpp visual_edit.cpp note_editor.cpp formatting_toolbar.cpp
-  include/hn/editor/history.h include/hn/editor/note_editor.h include/hn/editor/formatting_toolbar.h visual_edit.h)
+  wiki_links.cpp completion_popup.cpp note_editor_links.cpp
+  include/hn/editor/history.h include/hn/editor/note_editor.h include/hn/editor/formatting_toolbar.h include/hn/editor/wiki_links.h completion_popup.h visual_edit.h)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MD4C REQUIRED IMPORTED_TARGET md4c)
 target_include_directories(hn_editor PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src/core)

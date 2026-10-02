@@ -3,6 +3,7 @@
 #include "hn/core/library_index.h"
 #include "note_list.h"
 #include "note_session.h"
+#include "panel_dock.h"
 #include "status_strip.h"
 #include <QCache>
 #include <QListView>
@@ -15,11 +16,13 @@ class QLineEdit;
 class QPushButton;
 class QStackedLayout;
 class QVBoxLayout;
+class QHBoxLayout;
 
 namespace hn::app {
 
 class AppController;
 class PaneHeader;
+class PanelDock;
 namespace ui { class EmptyState; class FadeOverlay; class ElidedLabel; class IconButton; }
 
 class OrganizerWindow : public QWidget {
@@ -46,6 +49,10 @@ public:
     StatusStrip *status() const { return m_status; }
     QWidget *editorPane() const { return m_pane; }
     void setFilter(const QString &folder, const QString &tag);
+    // Plugin panel dock: created lazily when a plugin registers a panel, deleted when the last one goes. Nothing exists before.
+    PanelDock *dock() const { return m_dock; }
+    bool dockVisible() const;
+    void setDockVisible(bool on);
     void runSearchNow() { m_debounce.stop(); runSearch(0); }
 
 protected:
@@ -67,6 +74,7 @@ private:
     void editTags();
     void showMoreMenu();
     void restyle();
+    void syncDock();
 
     AppController *m_c;
     QString m_token, m_folder, m_tag, m_elsewhere;
@@ -94,6 +102,11 @@ private:
     int m_searches = 0, m_lastOffset = 0;
     bool m_syncing = false, m_titled = false;
     int m_total = 0;
+    QHBoxLayout *m_root = nullptr;
+    PanelDock *m_dock = nullptr;
+    QWidget *m_dockLine = nullptr;
+    DockToggle *m_dockToggle = nullptr;
+    int m_dockExtra = 0;   // window width added while the dock is open
 };
 
 } // namespace hn::app

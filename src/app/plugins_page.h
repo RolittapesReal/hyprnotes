@@ -24,6 +24,7 @@ public:
     QLabel *noteLabel() const { return m_note; }
     QPushButton *button(const QString &name) const { return m_buttons.value(name); }   // install enable disable reload remove folder audit
     QList<QLabel *> permissionLabels() const { return m_permLabels; }
+    QList<QLabel *> registrationLabels() const { return m_regLabels; }   // panels / completions / link handlers the plugin registered
     QList<QWidget *> settingEditors() const { return m_settingEditors; }
     QString statusText(const QString &id) const;   // chip text
     bool installPath(const QString &path);         // install + consent flow (shared by the dialog, drag and drop and tests)
@@ -41,7 +42,7 @@ private:
     QWidget *m_detail;
     QVBoxLayout *m_detailLay;
     QHash<QString, QPushButton *> m_buttons;
-    QList<QLabel *> m_permLabels;
+    QList<QLabel *> m_permLabels, m_regLabels;
     QList<QWidget *> m_settingEditors;
     QString m_sel;
     bool m_loaded = false;

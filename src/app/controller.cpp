@@ -263,6 +263,7 @@ bool AppController::setNotesFolder(const QString &path, QString *why) {
         if (why) *why = tr("Notes folder saved. Close open notes and restart Hyprnotes to switch libraries.");
         return false;
     }
+    m_plugins->quiesce();   // an index call that overran its 100 ms must not outlive the index
     m_index.reset();
     m_repo = std::make_unique<NoteRepository>(clean, m_stateDir + "/recovery");
     rootChanged();
@@ -289,6 +290,7 @@ LibraryIndex *AppController::index() {
 NoteSession *AppController::createSession(const QString &rel) {
     auto *s = new NoteSession(m_repo.get(), rel, this);
     s->setTiming(m_timing);
+    s->applyTheme(m_theme);   // BEFORE load: NoteEditor::setTheme() after a load would wipe undo and mark the note modified
     QString err;
     if (!s->load(&err)) {
         delete s;
@@ -296,7 +298,6 @@ NoteSession *AppController::createSession(const QString &rel) {
         qWarning("cannot open %s: %s", qPrintable(rel), qPrintable(err));
         return nullptr;
     }
-    s->applyTheme(m_theme);
     const NoteView v = m_noteState.get(rel);
     if (v.cursor || v.scroll) s->restoreView(v.cursor, v.scroll);
     connect(s, &NoteSession::savedOk, this, [this](const QString &r) {
@@ -571,16 +572,22 @@ void AppController::setNoteColor(const QString &rel, int idx) {
     emit noteColorChanged(rel);
 }
 
-bool AppController::renameNote(const QString &rel, const QString &newTitle, QString *err) {
+QString AppController::renamedRelFor(const QString &rel, const QString &newTitle, QString *err) const {
     QString base = newTitle;
     base.replace(QRegularExpression("[/\\\\\\x00-\\x1f]"), " ");
     base = base.trimmed();
     while (base.startsWith('.')) base.remove(0, 1);
     base = base.trimmed().left(120);
-    auto fail = [&](const QString &m) { if (err) *err = m; return false; };
-    if (base.isEmpty()) return fail(tr("The name cannot be empty."));
+    if (base.isEmpty()) { if (err) *err = tr("The name cannot be empty."); return {}; }
     const QString dir = QFileInfo(rel).path() == "." ? QString() : QFileInfo(rel).path() + "/";
-    const QString newRel = dir + base + ".md";
+    return dir + base + ".md";
+}
+
+bool AppController::renameNote(const QString &rel, const QString &newTitle, QString *err) {
+    auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+    QString why;
+    const QString newRel = renamedRelFor(rel, newTitle, &why);
+    if (newRel.isEmpty()) return fail(why);
     if (newRel == rel) return true;
     NoteSession *s = session(rel);
     if (s && !s->settled()) { s->flush(); return fail(tr("The note is still saving. Try again in a moment.")); }
@@ -630,6 +637,31 @@ bool AppController::runModCommand(const QString &rel, const QString &commandId) 
     for (const auto &a : m_plugins->commands())
         if (a.qid.endsWith(QLatin1Char(':') + commandId)) return m_plugins->run(a, s);
     return false;
+}
+
+DockPrefs AppController::dockPrefs() const {
+    if (!m_dockPrefs) {
+        DockPrefs p;
+        QFile f(m_stateDir + "/ui-state.json");
+        if (f.open(QIODevice::ReadOnly)) {
+            const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object().value("dock").toObject();
+            if (d.contains("visible")) p.visible = d.value("visible").toBool(true);
+            p.width = qBound(240, d.value("width").toInt(p.width), 640);
+        }
+        m_dockPrefs = p;
+    }
+    return *m_dockPrefs;
+}
+
+void AppController::setDockPrefs(const DockPrefs &p0) {
+    DockPrefs p = p0;
+    p.width = qBound(240, p.width, 640);
+    const DockPrefs cur = dockPrefs();
+    if (cur.visible == p.visible && cur.width == p.width) return;
+    m_dockPrefs = p;
+    QDir().mkpath(m_stateDir);
+    hn::core::atomicWrite(m_stateDir + "/ui-state.json",
+                          QJsonDocument(QJsonObject{{"version", 1}, {"dock", QJsonObject{{"visible", p.visible}, {"width", p.width}}}}).toJson(QJsonDocument::Compact), nullptr);
 }
 
 QList<DirtyDoc> AppController::dirtyDocs() const {
@@ -701,7 +733,7 @@ void AppController::promptRename(const QString &rel, QWidget *parent) {
     const QString name = QInputDialog::getText(parent, tr("Rename note"), tr("File name"), QLineEdit::Normal, QFileInfo(rel).completeBaseName(), &ok);
     if (!ok) return;
     QString err;
-    if (!renameNote(rel, name, &err)) emit errorOccurred(err);
+    if (!renameNoteWithLinks(rel, name, LinkMode::Ask, &err) && !err.isEmpty()) emit errorOccurred(err);
 }
 
 void AppController::promptEditTags(const QString &rel, QWidget *parent) {

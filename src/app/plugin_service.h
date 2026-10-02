@@ -4,10 +4,13 @@
 // the menus and palette read. Nothing here exists until a plugin that needs it is enabled (or the Plugins page is opened).
 #include "consent_dialog.h"
 #include "hn/plugins/runtime.h"
+#include "editor_hooks.h"
 #include "native_adapter.h"
+#include "panel_dock.h"
 #include "plugin_bridges.h"
 #include <QKeySequence>
 #include <QMap>
+#include <QSet>
 #include <QObject>
 #include <functional>
 #include <memory>
@@ -51,6 +54,17 @@ public:
     PluginNetBridge *net() const { return m_net.get(); }
     ModNativeAdapter *native() const { return m_native.get(); }
     QString nameOf(const QString &pluginId) const;
+    PluginLibraryBridge *library() const { return m_lib.get(); }
+    PanelHub *hub() const { return m_hub.get(); }
+    EditorHooks *editorHooks() const { return m_hooks2.get(); }
+    void quiesce() { if (m_lib) m_lib->waitLate(); }       // before the index goes away
+
+    // ---- panels (dock / sticky popup) ----
+    bool hasPanels() const { return m_hub && !m_hub->panels().isEmpty(); }
+    // A dock tells which panels it displays; only those are re-rendered by events (PluginManager::setPanelActive, ref-counted).
+    void setPanelsShown(QObject *owner, const QStringList &qids);
+    bool renderPanel(const QString &qid, NoteSession *s);  // render now (result goes to the hub)
+    void panelClick(const QString &qid, int token, NoteSession *s);
 
     // ---- sessions ----
     void attach(NoteSession *s);                           // events, pre_save, triggers, toolbar (no-op while inactive)
@@ -77,6 +91,7 @@ public:
     void rememberSource(const QString &id, const QString &source);
 
 signals:
+    void panelsChanged();                                  // a panel was registered / removed
     void changed();                                        // plugin list or registrations changed
 
 private:
@@ -94,6 +109,9 @@ private:
     std::unique_ptr<PluginUiBridge> m_ui;
     std::unique_ptr<PluginClipboardBridge> m_clip;
     std::unique_ptr<PluginThemeBridge> m_theme;
+    std::unique_ptr<PanelHub> m_hub;
+    std::unique_ptr<EditorHooks> m_hooks2;
+    QMap<QObject *, QSet<QString>> m_shown;
     std::unique_ptr<hn::plugins::PluginManager> m_mgr;
     QHash<NoteSession *, PluginNoteBridge *> m_bridges;
     QHash<NoteSession *, QList<QMetaObject::Connection>> m_conns;

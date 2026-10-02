@@ -86,7 +86,8 @@ release nosig test-a@example.invalid; rm "$W/nosig"/*.sig
 run missing-signature-rejected 3 "$W/install.sh" "file://$W/nosig"; expect_noU
 run unset-url-rejected 2 "$W/install.sh" ""; expect_noU
 run http-url-rejected 2 "$W/install.sh" "http://example.invalid/r"; expect_noU
-run placeholder-fingerprint-refused 2 "$here/../bootstrap/install.sh" "file://$W/good"; expect_noU
+sed '9s/.*/PINNED_FPR="REPLACE_WITH_RELEASE_SIGNING_FINGERPRINT"/' "$here/../bootstrap/install.sh" > "$W/placeholder.sh"
+run placeholder-fingerprint-refused 2 "$W/placeholder.sh" "file://$W/good"; expect_noU
 
 run cancel-at-pacman-nonzero 6 "$W/install.sh" "file://$W/good" STUB_U_EXIT=1
 expect_U

@@ -1,0 +1,12 @@
+{
+  "id": "open-tasks",
+  "name": "Open Tasks",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "A side panel listing every unchecked task (- [ ]) across your notes, found with a constrained index query. Click a task to jump to its note.",
+  "api": 2,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["notes.read", "notes.index", "ui.panel"],
+  "min_app": "0.1.0"
+}

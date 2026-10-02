@@ -88,6 +88,7 @@ private:
 
 // Authoring helpers (hyprnotes --pack-plugin / --new-plugin).
 bool packDirectory(const QString &dir, const QString &outFile, QList<PluginError> *errs);
-bool createTemplate(const QString &dir, const QString &name, QString *err);
+// api 1 (default): the classic command sample. api 2: a backlinks panel sample (notes.index, ui.panel, notes.read, note.read).
+bool createTemplate(const QString &dir, const QString &name, QString *err, int api = 1);
 
 }  // namespace hn::plugins

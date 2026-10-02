@@ -1,4 +1,4 @@
-# Hyprnotes plugin API reference (API version 1)
+# Hyprnotes plugin API reference (API versions 1 and 2)
 
 This is the reference for the `hn` table that script plugins (Lua 5.5, sandboxed) receive. For a guided introduction read [plugins.md](plugins.md).
 It is checked against the implementation: an automated test (`plugins_docs_test`) lists every function the sandbox exposes and fails if one is missing here (or documented but missing there), and it **runs every `lua` code block below** as a real plugin against fake bridges.
@@ -6,11 +6,15 @@ It is checked against the implementation: an automated test (`plugins_docs_test`
 Conventions used in every entry:
 
 - **Permission**: the entry in `plugin.json` `"permissions"` that the user must have approved. Calling without it raises `permission denied: <name>` (and writes a `denied` line to the audit log).
-- **Budget**: wall-clock limit of the callback the call runs in (events 50 ms, commands 2 s, `note.pre_save` 20 ms, triggers 50 ms, top-level load 250 ms). Time spent *waiting* for the user in `hn.ui.prompt/confirm/pick` and for the network does not count.
+- **Budget**: wall-clock limit of the callback the call runs in (events 50 ms, commands 2 s, `note.pre_save` 20 ms, triggers 50 ms, top-level load 250 ms, panel render 50 ms, completion 20 ms). Time spent *waiting* for the user in `hn.ui.prompt/confirm/pick` and for the network does not count.
 - **Errors**: Lua errors you can catch with `pcall`. A callback that raises (or overruns its budget) counts as a failure; three failures in a row disable the plugin.
 - Strings crossing the plugin/host boundary are UTF-8 and at most 4 MiB.
 
-Each block is a complete plugin `main.lua`. The first line of its fence says which permissions the test grants it.
+Each block is a complete plugin `main.lua`. The first line of its fence says which permissions the test grants it (and `api=2` when it uses the API-2 functions).
+
+**API versions.** `plugin.json` declares `"api": 1` or `"api": 2`. Version 1 is the original surface and is unchanged. Version 2 adds the note index (`hn.notes.links/backlinks/resolve/frontmatter/query/open/rename`), panels (`hn.panel`, `hn.panel_refresh`), completion (`hn.complete`) and link handlers (`hn.link_handler`, event `link.activate`), and four permissions: `notes.index`, `ui.panel`, `editor.complete`, `editor.links`. For an `"api": 1` plugin these functions **do not exist** (they are `nil`) and the manifest may not request the new permissions; a version 2 plugin needs a Hyprnotes that supports API 2 (`min_app` says which). Everything below marked *API 2* needs `"api": 2`.
+
+**Soft failures.** The API-2 index calls report problems the plugin can handle as `nil, "<reason>"` instead of raising: `"timeout: index call exceeded 100 ms"`, `"rate limit exceeded"`, `"not found"`, `"unsupported: this host does not provide ..."`. Programming errors (missing permission, bad arguments, an invalid query) raise as usual.
 
 ## Registration
 
@@ -70,6 +74,7 @@ Subscribes `fn` to an event. The function receives one string argument. You may 
 | `note.closed` | note path | |
 | `selection.changed` | note path | coalesced like `note.changed` |
 | `note.pre_save` | the note text | may **return** a replacement text; budget 20 ms; any non-string result is ignored |
+| `link.activate` | a link table | *API 2*, needs `editor.links`; see [hn.link_handler](#hnlink_handlerspec) |
 
 Handlers run with a 50 ms budget (20 ms for `note.pre_save`). The active note is available through `hn.note.*` inside note events; `app.started` has no active note. The arguments above are what the runtime hands to your function; which note events the app emits when is up to the app.
 
@@ -299,6 +304,217 @@ Deletes the note and returns `true` on success. Permission: `notes.write` (dange
 hn.command{ id = "rm", title = "Delete scratch", run = function()
   if hn.ui.confirm("Delete scratch/tmp.md?") then hn.notes.delete("scratch/tmp.md") end
 end }
+```
+
+## The note index: `hn.notes` (API 2)
+
+These read the host's link/frontmatter/task index. They need `"api": 2` and the permission `notes.index` (except `open`, which needs `notes.read`, and `rename`, which needs `notes.write`). Paths are relative note paths as above.
+
+Limits for every index call: **100 ms** wall budget per call (the index reports an overrun as a timeout and the runtime discards a result that arrives later), **500 ms** for all index calls of one callback, **200 calls per second** per plugin (`nil, "rate limit exceeded"`; the denial is written to the audit log). Time inside index calls is not charged to your callback budget, but these bounds apply instead. Results are plain Lua tables: at most 500 rows, strings cut at 64 KiB, nesting cut at 6 levels; a result that cannot fit your 16 MiB heap raises `value too large for the plugin memory limit`.
+
+A **link row** is `{ kind = "link" | "embed", target = "b", alias?, anchor?, resolved?, src?, context?, line }`: `target` is what was written inside `[[ ]]` (without alias and anchor), `resolved` the note path it points to (absent when unresolved), `src` the note that contains the link (set by `backlinks`), `context` the surrounding text and `line` the 1-based line. Absent means the key is not in the table.
+
+### hn.notes.links(path)
+
+`hn.notes.links(path) -> rows | nil, err`  -  the outgoing links of one note (at most 500 rows). Permission: `notes.index`. Budget: 100 ms. Errors raised: `invalid note path`, `permission denied: notes.index`; soft: `"not found"`, `"timeout: ..."`, `"unsupported: ..."`, `"rate limit exceeded"`.
+
+```lua test perms=notes.index,ui api=2
+hn.command{ id = "links", title = "Count links", run = function()
+  local rows, err = hn.notes.links("notes/a.md")
+  if not rows then hn.ui.notify("no index: " .. err) return end
+  local unresolved = 0
+  for _, row in ipairs(rows) do if not row.resolved then unresolved = unresolved + 1 end end
+  hn.ui.notify(#rows .. " links, " .. unresolved .. " unresolved")
+end }
+```
+
+### hn.notes.backlinks(path, opts?)
+
+`hn.notes.backlinks(path, { limit = 50, offset = 0 }) -> rows | nil, err`  -  the links pointing at a note, newest-first order is up to the index. `limit` is 1-500 (default 50), `offset` 0-100000, anything else raises `option 'limit' must be an integer between 1 and 500`. Rows carry `src` and `context`. Permission: `notes.index`. Budget: 100 ms.
+
+```lua test perms=notes.index,ui api=2
+hn.command{ id = "back", title = "Who links here", run = function()
+  local rows = hn.notes.backlinks("notes/a.md", { limit = 10 })
+  for _, row in ipairs(rows or {}) do hn.log(row.src .. ":" .. row.line .. "  " .. row.context) end
+end }
+```
+
+### hn.notes.resolve(name)
+
+`hn.notes.resolve(name) -> { status, path?, candidates } | nil, err`  -  how the index resolves `[[name]]`. `status` is `"resolved"` (then `path` is set), `"ambiguous"` (`candidates` lists up to 20 paths) or `"unresolved"`. `name` is 1-256 characters without control characters. Permission: `notes.index`. Budget: 100 ms.
+
+```lua test perms=notes.index,ui api=2
+hn.command{ id = "res", title = "Resolve a name", run = function()
+  local r = hn.notes.resolve("dup")
+  if r.status == "ambiguous" then hn.ui.notify("one of: " .. table.concat(r.candidates, ", "))
+  elseif r.status == "resolved" then hn.ui.notify("-> " .. r.path)
+  else hn.ui.notify("no such note") end
+end }
+```
+
+### hn.notes.frontmatter(path)
+
+`hn.notes.frontmatter(path) -> table | nil, err`  -  the parsed YAML frontmatter of a note (`title`, `aliases`, `tags`, free keys; strings and lists), read-only. Permission: `notes.index`. Budget: 100 ms. Soft error `"not found"`.
+
+```lua test perms=notes.index,ui api=2
+hn.command{ id = "fm", title = "Show status", run = function()
+  local fm = hn.notes.frontmatter("notes/a.md")
+  hn.ui.notify("status: " .. tostring(fm and fm.status))
+end }
+```
+
+### hn.notes.query(spec)
+
+`hn.notes.query{ from, where?, order?, select?, limit?, offset? } -> rows | nil, err`  -  a constrained, read-only query over the index. It is **data, never SQL**.
+
+- `from`: `"notes"`, `"tasks"` or `"links"`.
+- `where`: up to 16 clauses `{ field, op, value }`. `op` is one of `= != < > <= >= like in contains`; `value` is a string (up to 1024 bytes, 256 for `like`/`contains`), number or boolean; `in` takes a list of 1-64 such values.
+- `order`: up to 4 entries `{ field, dir = "asc" | "desc" }`. `select`: up to 16 field names.
+- `limit`: integer >= 1, capped at **500** (default 100). `offset`: integer 0-100000.
+- Field names: `[A-Za-z_][A-Za-z0-9_]*` with an optional `.key` suffix (`meta.status`), at most 64 characters. Which fields exist per source (for example `path`, `title`, `tag`, `mtime`, `done`, `text`, `target`) is decided by the index; it rejects unknown ones with `nil, "invalid request"`.
+- The spec is validated here **before** it reaches the host: unknown keys, wrong types, bad field names or operators, oversize values, more than 1500 table elements or 8 KiB of JSON raise `invalid query: ...` (audited as `denied`). What the host receives is a rebuilt, normalised copy, never your table.
+
+Permission: `notes.index`. Budget: 100 ms. Returns at most 500 rows, each a plain table of the selected fields.
+
+```lua test perms=notes.index,ui api=2
+hn.command{ id = "q", title = "Open tasks", run = function()
+  local rows, err = hn.notes.query{
+    from = "tasks",
+    where = { { field = "done", op = "=", value = false } },
+    order = { { field = "path" }, { field = "line" } },
+    limit = 20,
+  }
+  if not rows then hn.ui.notify("query failed: " .. err) return end
+  for _, row in ipairs(rows) do hn.log(row.path .. ":" .. row.line .. " " .. row.text) end
+end }
+```
+
+### hn.notes.open(path, opts?)
+
+`hn.notes.open(path, { where = "organizer" | "sticky" }) -> true | nil, err`  -  asks the app to show a note (default: the organizer). Permission: `notes.read`. At most 5 per callback (`too many notes opened in one callback (max 5)`). Errors: `invalid note path`, `where must be "organizer" or "sticky"`.
+
+```lua test perms=notes.read api=2
+hn.command{ id = "open", title = "Open the inbox", run = function()
+  hn.notes.open("inbox/todo.md", { where = "sticky" })
+end }
+```
+
+### hn.notes.rename(path, new_name, opts?)
+
+`hn.notes.rename(path, new_name, { update_links = false }) -> new_path | nil, err`  -  renames a note inside its folder. `new_name` is a plain file name (no `/` or `\`, not starting with `.`, at most 200 bytes). With `update_links = true` the app also rewrites links in other notes; it decides how (the app shows the user the list of files that will change and asks first), and the default is `false`. Permission: `notes.write` (dangerous), audited as `notes.rename`, counts toward the 50 writes per callback. Errors: `invalid new name ...`, `invalid note path`, `option 'update_links' must be a boolean`.
+
+```lua test perms=notes.write,ui api=2
+hn.command{ id = "ren", title = "Rename a note", run = function()
+  local new_path, err = hn.notes.rename("notes/a.md", "alpha.md", { update_links = true })
+  hn.ui.notify(new_path and ("renamed to " .. new_path) or ("rename failed: " .. err))
+end }
+```
+
+## Panels (API 2)
+
+A panel is a page in the app's side dock. You do not draw it: `render` returns **blocks** and the app draws them (no widgets, no HTML, no scripts). Needs `"api": 2` and the permission `ui.panel`.
+
+### hn.panel(spec)
+
+`hn.panel{ id, title, icon?, render, on_event?, refresh_on? }`  -  registers a panel. Normally called at load time.
+
+- `id`: like command ids (unique among your panels, at most 16 panels). `title`: up to 120 characters. `icon`: a short icon name.
+- `render(ctx)`: returns an array of blocks. `ctx.panel` is the panel id; `ctx.path` and `ctx.title` describe the open note and are only present when you have `note.read`. Budget: **50 ms** (index time excluded as described above). `hn.note.*` works inside `render` (with `note.read`).
+- `refresh_on`: events (`note.opened`, `note.changed`, `note.saved`, `note.closed`, `selection.changed`) that re-render the panel, coalesced like the events themselves. Only a panel the user is looking at is re-rendered; a hidden panel costs nothing and no Lua state is created for it.
+- `on_event(event, arg)`: optional, called (50 ms budget) before the re-render for each `refresh_on` event.
+- The registration (title, icon, events) is cached, so the app lists your panels without running any Lua; the Lua state is created on the first render.
+
+Blocks. At most **200** blocks per panel (list items count), at most 256 KiB of text in total; strings longer than their limit are cut, structural mistakes reject the whole render with `invalid panel: block #3: ...`:
+
+| `type` | fields | limits |
+|---|---|---|
+| `heading` | `text`, `level?` 1-3 | text 200 characters |
+| `text` | `text` | 16 KiB |
+| `markdown` | `text` | 16 KiB, drawn by the app's Markdown renderer |
+| `empty` | `text?` | 400 characters (a "nothing here" placeholder) |
+| `button` | `label`, `on_click` | label 200 characters |
+| `item` | `title`, `subtitle?`, `path?`, `line?`, `on_click?` | title 200, subtitle 400, `path` a valid note path, `line` 1-10 000 000 |
+| `list` | `items` (array of `item`) | only items, no nested lists |
+
+`on_click` is a function. It runs as a normal callback of **your** plugin (same permissions, a 2 s budget like a command, counted by the circuit breaker) when the user clicks. `path` and `line` tell the app which note and line the item stands for (it may use them for hover text or to open the note when an item has no `on_click`); to open a note yourself call `hn.notes.open`. Click handlers belong to the render that produced them; a click on a panel that was re-rendered in the meantime is ignored.
+
+Permission: `ui.panel`. Errors: `field 'render' must be a function`, `duplicate panel id or too many panels`, `refresh_on may only list: ...`; a render that raises, overruns 50 ms or returns invalid blocks shows an error in the panel and counts as a failure (three in a row disable the plugin).
+
+```lua test perms=ui.panel,notes.index,notes.read,note.read api=2
+hn.panel{
+  id = "backlinks",
+  title = "Backlinks",
+  icon = "link",
+  refresh_on = { "note.opened", "note.saved" },
+  render = function(ctx)
+    if not ctx.path then return { { type = "empty", text = "No note open" } } end
+    local rows = hn.notes.backlinks(ctx.path, { limit = 50 })
+    if not rows or #rows == 0 then return { { type = "empty", text = "Nothing links here yet" } } end
+    local items = {}
+    for i, row in ipairs(rows) do
+      items[i] = { type = "item", title = row.src, subtitle = row.context, path = row.src, line = row.line,
+                   on_click = function() hn.notes.open(row.src) end }
+    end
+    return { { type = "heading", text = #rows .. " backlinks" }, { type = "list", items = items },
+             { type = "button", label = "Open the first", on_click = function() hn.notes.open(rows[1].src, { where = "sticky" }) end } }
+  end,
+}
+```
+
+### hn.panel_refresh(id)
+
+`hn.panel_refresh(id) -> boolean`  -  asks the app to re-render one of your panels soon (coalesced; it never re-enters your code). Returns `true` when the request was queued and `false` when it was ignored: the call came from the panel's own render, or you made more than 10 requests per second. Raises `unknown panel '...'` for an id you did not register. Permission: `ui.panel`. A hidden panel ignores the request.
+
+```lua test perms=ui.panel api=2
+local count = 0
+hn.panel{ id = "clock", title = "Clock", render = function()
+  return { { type = "text", text = "rendered " .. count .. " times" },
+           { type = "button", label = "Again", on_click = function() count = count + 1 hn.panel_refresh("clock") end } }
+end }
+```
+
+## Editor hooks (API 2)
+
+### hn.complete(spec)
+
+`hn.complete{ id, trigger, items }`  -  registers a completion source. When the user types `trigger` (1-8 visible characters such as `"[["` or `"/"`) the editor opens a flat, keyboard-driven popup and asks every plugin registered for that trigger. `items(query, ctx)` receives what the user has typed after the trigger (cut at 256 bytes) and `ctx = { trigger, path?, title? }` (the last two with `note.read`), and returns an array of `{ label, detail?, insert, cursor_offset? }`.
+
+- Budget: **20 ms** per plugin per request. At most **50 items** are shown in total; surplus items are dropped.
+- Invalid items are dropped (and logged): not a table, `label` missing/empty/longer than 200 characters, `insert` missing/empty/longer than 8192 characters, `detail` not a string or longer than 200, `cursor_offset` not an integer within `0..#insert` (characters into `insert`; default: the end).
+- At most 16 completion sources per plugin. Registration is cached; no Lua state exists until the first request.
+
+Permission: `editor.complete`. Errors: `trigger must be 1-8 visible characters without spaces ...`, `field 'items' must be a function`, `duplicate completion id or too many completions`.
+
+```lua test perms=editor.complete,notes.read api=2
+hn.complete{
+  id = "notes",
+  trigger = "[[",
+  items = function(query)
+    local items = {}
+    for _, note in ipairs(hn.notes.list(query)) do
+      items[#items + 1] = { label = note.title, detail = note.path, insert = note.title .. "]]" }
+    end
+    return items
+  end,
+}
+```
+
+### hn.link_handler(spec)
+
+`hn.link_handler{ pattern? }`  -  declares that the plugin wants link activations (Ctrl+click or click on a `[[...]]`). `pattern` is an optional filter function `pattern(ref) -> boolean`; when present, the plugin's handlers only see links for which it returns `true`. The handlers themselves are registered with `hn.on("link.activate", fn)` (this also registers the plugin as a link handler, so `hn.link_handler` is only needed for a filter).
+
+`ref` is `{ kind = "link" | "embed", target, alias?, anchor?, resolved? }`; `resolved` is the note path the link resolves to when it does. A handler **returns `true`** to consume the activation (the app then skips its default behaviour); anything else lets the next handler or the default run. Budget: 50 ms for the filter and for each handler; the first handler to return `true` wins; a handler that raises or overruns never consumes a link.
+
+Permission: `editor.links` (for `hn.link_handler` and for subscribing to `link.activate`). Errors: `hn.link_handler was already called`, `field 'pattern' must be a function`.
+
+```lua test perms=editor.links,notes.read api=2
+-- Only handle links to notes that do not exist yet? Here: only links that resolve, and open them in the sticky window.
+hn.link_handler{ pattern = function(ref) return ref.kind == "link" and ref.resolved ~= nil end }
+
+hn.on("link.activate", function(ref)
+  hn.notes.open(ref.resolved, { where = "sticky" })
+  return true
+end)
 ```
 
 ## Dialogs: `hn.ui`

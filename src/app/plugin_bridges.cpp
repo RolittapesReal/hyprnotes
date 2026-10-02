@@ -1,5 +1,7 @@
 #include "plugin_bridges.h"
+#include "hn/core/frontmatter.h"
 #include "hn/core/markdown_codec.h"
+#include "link_rename.h"
 #include "controller.h"
 #include "plugin_service.h"
 #include "ui_common.h"
@@ -10,6 +12,8 @@
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -23,6 +27,7 @@
 #include <QTextCursor>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <chrono>
 
 using namespace hn::plugins;
 using hn::editor::Mode;
@@ -137,19 +142,7 @@ bool PluginLibraryBridge::write(const QString &path, const QString &text) {
     if (!QFileInfo::exists(repo.absolutePath(path))) return false;   // create() is the way to make notes
     const auto snap = repo.read(path);   // sets the baseline: an external change since now is detected as a conflict
     if (!snap.ok) return false;
-    const quint64 rev = repo.save(path, text.toUtf8(), snap.revision);
-    bool done = false, ok = false;
-    QEventLoop loop;
-    QTimer cap;
-    cap.setSingleShot(true);
-    auto finish = [&](bool good) { done = true; ok = good; loop.quit(); };
-    const auto c1 = QObject::connect(&repo, &hn::core::NoteRepository::saved, &loop, [&](const QString &r, quint64 v) { if (r == path && v == rev) finish(true); });
-    const auto c2 = QObject::connect(&repo, &hn::core::NoteRepository::saveFailed, &loop, [&](const QString &r, const QString &, quint64 v) { if (r == path && v == rev) finish(false); });
-    const auto c3 = QObject::connect(&repo, &hn::core::NoteRepository::conflict, &loop, [&](const QString &r, const QByteArray &, const QByteArray &, quint64 v) { if (r == path && v == rev) finish(false); });
-    QObject::connect(&cap, &QTimer::timeout, &loop, &QEventLoop::quit);
-    cap.start(5000);
-    if (!done) loop.exec(QEventLoop::ExcludeUserInputEvents);
-    QObject::disconnect(c1); QObject::disconnect(c2); QObject::disconnect(c3);
+    const bool ok = saveAndWait(repo, path, text.toUtf8(), snap.revision) == SaveOutcome::Saved;
     if (ok) { if (m_c->hasIndex()) m_c->index()->updatePath(path); emit m_c->notesChanged(); }
     return ok;
 }
@@ -157,6 +150,136 @@ bool PluginLibraryBridge::write(const QString &path, const QString &text) {
 bool PluginLibraryBridge::remove(const QString &path) {
     if (!validRel(path)) return false;
     return m_c->deleteNote(path, nullptr);
+}
+
+// ---------------------------------------------------------------- API 2: index-backed calls
+bool PluginLibraryBridge::exists(const QString &rel) const { return m_c->session(rel) || QFileInfo::exists(m_c->repo().absolutePath(rel)); }
+
+void PluginLibraryBridge::waitLate() {
+    for (auto &f : m_late) if (f.valid()) f.wait();
+    m_late.clear();
+}
+
+template <class F> bool PluginLibraryBridge::bounded(F f) {
+    using namespace std::chrono_literals;
+    std::erase_if(m_late, [](std::future<void> &x) { return x.wait_for(0ms) == std::future_status::ready; });
+    auto delay = indexDelayForTests;
+    auto fut = std::async(std::launch::async, [f = std::move(f), delay]() mutable { if (delay) delay(); f(); });
+    if (fut.wait_for(std::chrono::milliseconds(kIndexMs)) == std::future_status::ready) { fut.get(); return true; }
+    m_late.push_back(std::move(fut));   // keeps running; its result is dropped (only the shared_ptr it owns sees it)
+    return false;
+}
+
+namespace {
+LinkRow toRow(const hn::core::LinkRow &r) {
+    LinkRow o;
+    o.kind = r.kind; o.target = r.target; o.alias = r.alias; o.anchor = r.anchor;
+    o.resolved = r.resolved ? r.destPath : QString();
+    o.src = r.srcPath; o.context = r.context; o.line = r.line;
+    return o;
+}
+}  // namespace
+
+BridgeStatus PluginLibraryBridge::links(const QString &path, QList<LinkRow> *out) {
+    if (!validRel(path) || !out) return BridgeStatus::Invalid;
+    if (!exists(path)) return BridgeStatus::NotFound;
+    auto *idx = m_c->index();
+    auto res = std::make_shared<QList<hn::core::LinkRow>>();
+    const auto dirty = m_c->dirtyDocs();
+    if (!bounded([=] { *res = idx->linksFrom(path, dirty); })) return BridgeStatus::Timeout;
+    out->clear();
+    for (const auto &r : std::as_const(*res)) { if (out->size() >= kMaxRows) break; out->append(toRow(r)); }
+    return BridgeStatus::Ok;
+}
+
+BridgeStatus PluginLibraryBridge::backlinks(const QString &path, int limit, int offset, QList<LinkRow> *out) {
+    if (!validRel(path) || !out || limit < 1 || offset < 0) return BridgeStatus::Invalid;
+    if (!exists(path)) return BridgeStatus::NotFound;
+    limit = qMin(limit, kMaxRows);
+    auto *idx = m_c->index();
+    auto res = std::make_shared<hn::core::LinkPage>();
+    const auto dirty = m_c->dirtyDocs();
+    if (!bounded([=] { *res = idx->backlinks(path, limit, offset, dirty); })) return BridgeStatus::Timeout;
+    out->clear();
+    for (const auto &r : std::as_const(res->rows)) { if (out->size() >= limit) break; out->append(toRow(r)); }
+    return BridgeStatus::Ok;
+}
+
+BridgeStatus PluginLibraryBridge::resolveFrom(const QString &name, const QString &fromRel, ResolveResult *out) {
+    if (name.isEmpty() || !out) return BridgeStatus::Invalid;
+    auto *idx = m_c->index();
+    auto res = std::make_shared<hn::core::Resolution>();
+    if (!bounded([=] { *res = idx->resolve(name, fromRel); })) return BridgeStatus::Timeout;
+    out->status = res->state == hn::core::Resolution::Resolved ? QStringLiteral("resolved")
+                : res->state == hn::core::Resolution::Ambiguous ? QStringLiteral("ambiguous") : QStringLiteral("unresolved");
+    out->path = res->state == hn::core::Resolution::Resolved ? res->path : QString();
+    out->candidates = res->state == hn::core::Resolution::Ambiguous ? res->candidates : QStringList();
+    return BridgeStatus::Ok;
+}
+
+BridgeStatus PluginLibraryBridge::frontmatter(const QString &path, QJsonObject *out) {
+    if (!validRel(path) || !out) return BridgeStatus::Invalid;
+    QByteArray bytes;
+    if (NoteSession *s = m_c->session(path)) { PluginNoteBridge b(s); bytes = b.text().toUtf8(); }   // the open text, not the file
+    else {
+        QFile f(m_c->repo().absolutePath(path));
+        if (!f.open(QIODevice::ReadOnly)) return BridgeStatus::NotFound;
+        bytes = f.read(hn::core::kFrontmatterMaxBytes + 64);   // the block is capped at 16 KiB: never read the whole note
+    }
+    const auto fm = hn::core::parseFrontmatter(bytes);
+    out->insert(QStringLiteral("present"), fm.present);
+    for (auto it = fm.fields.begin(); it != fm.fields.end(); ++it) {
+        if (it.key() == QLatin1String("present")) continue;
+        if (it->isList) out->insert(it.key(), QJsonArray::fromStringList(it->items));
+        else out->insert(it.key(), it->scalar());
+    }
+    if (fm.present) {
+        if (fm.fields.contains(QStringLiteral("tags"))) out->insert(QStringLiteral("tags"), QJsonArray::fromStringList(fm.tags));
+        if (fm.fields.contains(QStringLiteral("aliases"))) out->insert(QStringLiteral("aliases"), QJsonArray::fromStringList(fm.aliases));
+    }
+    return BridgeStatus::Ok;
+}
+
+BridgeStatus PluginLibraryBridge::query(const QJsonObject &spec, QJsonArray *rows) {
+    if (!rows) return BridgeStatus::Invalid;
+    auto *idx = m_c->index();
+    auto res = std::make_shared<hn::core::QueryResult>();
+    // The runtime validated and normalised `spec`; QueryEngine validates once more and never sees SQL from a plugin.
+    // ponytail: the query path has no dirty-document merge (LibraryIndex::query takes none); unsaved edits show up after autosave (<= 5 s).
+    if (!bounded([=] { *res = idx->query(spec); })) return BridgeStatus::Timeout;
+    if (!res->ok) return res->error.contains(QLatin1String("budget")) || res->error.contains(QLatin1String("superseded")) ? BridgeStatus::Timeout : BridgeStatus::Invalid;
+    QJsonArray arr;
+    for (const auto &r : std::as_const(res->rows)) {
+        if (arr.size() >= kMaxRows) break;
+        QJsonObject o;
+        for (int i = 0; i < res->columns.size() && i < r.size(); ++i) o.insert(res->columns[i], QJsonValue::fromVariant(r[i]));
+        arr.append(o);
+    }
+    *rows = arr;
+    return BridgeStatus::Ok;
+}
+
+BridgeStatus PluginLibraryBridge::open(const QString &path, const QString &where) {
+    if (!validRel(path)) return BridgeStatus::Invalid;
+    if (!exists(path)) return BridgeStatus::NotFound;
+    NoteSession *s = nullptr;
+    if (where == QLatin1String("sticky")) s = m_c->openSticky(path, true);
+    else if (where == QLatin1String("organizer")) { m_c->showOrganizer(true); s = m_c->openInOrganizer(path); }
+    else return BridgeStatus::Invalid;
+    return s ? BridgeStatus::Ok : BridgeStatus::Invalid;
+}
+
+BridgeStatus PluginLibraryBridge::rename(const QString &path, const QString &newName, bool updateLinks, QString *newPath) {
+    if (!validRel(path) || newName.isEmpty() || newName.contains(QLatin1Char('/')) || newName.contains(QLatin1Char('\\'))) return BridgeStatus::Invalid;
+    if (!exists(path)) return BridgeStatus::NotFound;
+    QString title = newName;
+    if (title.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive)) title.chop(3);
+    QString err, np;
+    // update_links = true: the app shows the user the files that would change and asks (Update links / Rename only / Cancel).
+    // Cancel (or any failure) leaves everything as it was and is reported as Invalid.
+    if (!m_c->renameNoteWithLinks(path, title, updateLinks ? LinkMode::Ask : LinkMode::None, &err, &np)) return BridgeStatus::Invalid;
+    if (newPath) *newPath = np;
+    return BridgeStatus::Ok;
 }
 
 // ================================================================ ui

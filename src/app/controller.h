@@ -9,6 +9,7 @@
 #include "hn/platform/tray_controller.h"
 #include "hn/platform/window_identity.h"
 #include "hn/platform/window_placement.h"
+#include "link_rename.h"
 #include "note_session.h"
 #include "note_state.h"
 #include "organizer_window.h"
@@ -43,7 +44,11 @@ struct ControllerOptions {
     std::function<QString(const QString &suggested)> chooseNotesFolder;              // first run; default dialog
     std::function<RecoveryChoice(const QList<hn::core::RecoveryEntry> &)> recoveryPrompt;   // default dialog
     std::function<bool(const QString &title, const QString &text)> confirm;          // default QMessageBox
+    std::function<LinkChoice(const QString &summary, const QStringList &lines)> linkChoice;   // rename with backlinks; default dialog
 };
+
+// Remembered across runs in <state>/ui-state.json.
+struct DockPrefs { bool visible = true; int width = 320; };
 
 // Kept for source compatibility: the text size now lives in hn::theme::Settings::fontSize.
 struct AppPrefs { int fontSize = 0; };   // 0 = theme default
@@ -93,7 +98,13 @@ public:
     bool popIn(const QString &rel);
     void closeNote(const QString &rel, bool discard = false);   // save-aware; refused closes keep the editor visible
     void discardNote(const QString &rel);                       // confirmed explicit discard
-    bool renameNote(const QString &rel, const QString &newTitle, QString *err = nullptr);
+    bool renameNote(const QString &rel, const QString &newTitle, QString *err = nullptr);   // plain rename, links in other notes are not touched
+    // Rename; with LinkMode::Ask and notes linking here, ONE dialog offers Update links / Rename only / Cancel (see link_rename.cpp).
+    // Returns false on failure (err set) or cancel (err empty). *newRel = the new path.
+    bool renameNoteWithLinks(const QString &rel, const QString &newTitle, LinkMode mode, QString *err = nullptr, QString *newRel = nullptr);
+    const LinkUpdateReport &lastLinkReport() const { return m_linkReport; }
+    DockPrefs dockPrefs() const;
+    void setDockPrefs(const DockPrefs &p);
     bool deleteNote(const QString &rel, QString *err = nullptr);
     int noteColor(const QString &rel) { return m_noteState.color(rel); }
     void setNoteColor(const QString &rel, int idx);
@@ -191,8 +202,11 @@ private:
     bool ask(const QString &title, const QString &text);
     void migrateLegacyPrefs(bool haveConfig);
     void rootChanged();
+    QString renamedRelFor(const QString &rel, const QString &newTitle, QString *err) const;
 
     ControllerOptions m_opt;
+    LinkUpdateReport m_linkReport;
+    mutable std::optional<DockPrefs> m_dockPrefs;
     QString m_savedFolder;
     QString m_configPath, m_stateDir, m_cacheDir, m_modsEnabled;
     std::unique_ptr<hn::theme::Config> m_config;

@@ -8,7 +8,7 @@ add_library(hn_plugins STATIC
 target_include_directories(hn_plugins PUBLIC include)
 target_link_libraries(hn_plugins PUBLIC Qt6::Core PRIVATE PkgConfig::LUA PkgConfig::LIBARCHIVE PkgConfig::LUA)
 
-foreach(t manifest package trust runtime sandbox hardening examples docs)
+foreach(t manifest package trust runtime sandbox hardening examples docs v2)
   add_executable(plugins_${t}_test ${CMAKE_SOURCE_DIR}/tests/unit/plugins_${t}_test.cpp)
   target_link_libraries(plugins_${t}_test PRIVATE hn_plugins Qt6::Test PkgConfig::LIBARCHIVE PkgConfig::LUA)
   target_compile_definitions(plugins_${t}_test PRIVATE HN_PLUGIN_FIXTURES="${CMAKE_SOURCE_DIR}/tests/unit/fixtures/plugins"

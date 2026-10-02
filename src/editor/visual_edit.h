@@ -39,6 +39,7 @@ public:
     QRect checkRect(const QTextBlock &b) const;   // viewport coords of the painted (and clickable) checklist box
     void setRuleColor(const QColor &c) { m_rule = c; viewport()->update(); }   // horizontal rule hairline (theme border)
     std::function<void()> afterTyping;   // additive: called after a plain typed character (not IME, no selection)
+    std::function<void(QPainter &)> overlayPaint;   // additive: painted on the viewport after everything else
 
 signals:
     void undoRequested();
@@ -85,13 +86,17 @@ public:
     SourceEdit(EditRecorder *rec, QWidget *parent = nullptr);
     void cutRecorded();
     std::function<void()> afterTyping;   // additive, see VisualEdit
+    std::function<void(QPainter &)> overlayPaint;   // additive, see VisualEdit
     bool imePreedit() const { return m_preedit; }
+    QTextBlock firstVisible() const { return firstVisibleBlock(); }
+    QPointF blockOrigin(const QTextBlock &b) const { return blockBoundingGeometry(b).translated(contentOffset()).topLeft(); }
 signals:
     void undoRequested();
     void redoRequested();
 
 protected:
     void keyPressEvent(QKeyEvent *e) override;
+    void paintEvent(QPaintEvent *e) override;
     void inputMethodEvent(QInputMethodEvent *e) override;
     void insertFromMimeData(const QMimeData *src) override;
     void dropEvent(QDropEvent *e) override;

@@ -10,14 +10,14 @@ Markdown notes for Hyprland. One small native process gives you an organizer and
 - Search, tags and folders in an organizer. Pop any note out into its own sticky window.
 - Autosave, crash recovery, and a clear conflict prompt if another program changes a note you have open.
 - Flat modernist look in light and dark. Import your own theme (Hyprnotes JSON, base16 or VS Code).
-- Lua plugins for commands, typing triggers and a command palette (Ctrl+Shift+P).
+- Lua plugins for commands, typing triggers, side panels, `[[link]]` completion and a command palette (Ctrl+Shift+P).
 - Lives in the tray, runs as a single instance, and stays light on memory and CPU.
 
 Written in C++20 with Qt 6. Targets Arch Linux and Hyprland on Wayland.
 
 ## Install
 
-There is no published release yet, so build the package yourself:
+Grab the signed package from the [releases page](https://github.com/RolittapesReal/hyprnotes/releases) (see [docs/install.md](docs/install.md) for verifying it), or build it yourself:
 
 ```sh
 packaging/build-package.sh

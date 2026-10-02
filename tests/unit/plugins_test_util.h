@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtTest>
 #include <archive.h>
 #include <archive_entry.h>
@@ -32,16 +33,16 @@ inline bool writeFile(const QString &path, const QByteArray &data) {
 }
 inline QByteArray readFile(const QString &path) { QFile f(path); return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray(); }
 
-inline QByteArray manifestJson(const QString &id, const QStringList &perms = {}, const QStringList &hosts = {}, const QString &tier = "script", const QString &entry = "main.lua") {
+inline QByteArray manifestJson(const QString &id, const QStringList &perms = {}, const QStringList &hosts = {}, const QString &tier = "script", const QString &entry = "main.lua", int api = 1) {
     QJsonObject o{{"id", id}, {"name", "Test " + id}, {"version", "1.0.0"}, {"author", "tests"}, {"description", "test plugin"},
-                  {"api", 1}, {"tier", tier}, {"entry", entry}, {"permissions", QJsonArray::fromStringList(perms)}, {"min_app", "0.1.0"}};
+                  {"api", api}, {"tier", tier}, {"entry", entry}, {"permissions", QJsonArray::fromStringList(perms)}, {"min_app", "0.1.0"}};
     if (!hosts.isEmpty()) o["net_hosts"] = QJsonArray::fromStringList(hosts);
     return QJsonDocument(o).toJson();
 }
 // Writes <root>/<id>/{plugin.json,main.lua}
-inline QString writePlugin(const QString &root, const QString &id, const QStringList &perms, const QByteArray &lua, const QStringList &hosts = {}) {
+inline QString writePlugin(const QString &root, const QString &id, const QStringList &perms, const QByteArray &lua, const QStringList &hosts = {}, int api = 1) {
     const QString dir = root + "/" + id;
-    writeFile(dir + "/plugin.json", manifestJson(id, perms, hosts));
+    writeFile(dir + "/plugin.json", manifestJson(id, perms, hosts, "script", "main.lua", api));
     writeFile(dir + "/main.lua", lua);
     return dir;
 }
@@ -111,6 +112,68 @@ struct FakeLib : LibraryBridge {
     bool write(const QString &p, const QString &) override { calls << "write:" + p; return true; }
     bool remove(const QString &p) override { calls << "delete:" + p; return true; }
 };
+// API 2: a library with a canned index. Records every call, can be forced to a status and made slow.
+struct FakeIndexLib : FakeLib {
+    QMap<QString, QList<LinkRow>> outgoing, incoming;
+    QMap<QString, QJsonObject> fm;
+    QMap<QString, ResolveResult> resolves;
+    QJsonArray queryRows;
+    QList<QJsonObject> querySpecs;
+    QStringList opened, renamed;
+    int indexCalls = 0, backlinkLimit = 0, backlinkOffset = 0;
+    BridgeStatus forced = BridgeStatus::Ok;
+    int delayMs = 0;
+    FakeIndexLib() {
+        LinkRow l1{"link", "b", "", "", "b.md", "", "see [[b]] for details", 3};
+        LinkRow l2{"embed", "pic", "", "", "", "", "![[pic]]", 7};
+        outgoing["notes/a.md"] = {l1, l2};
+        incoming["notes/a.md"] = {{"link", "a", "A", "", "notes/a.md", "b.md", "links to [[a|A]]", 2}, {"link", "a", "", "intro", "notes/a.md", "c.md", "see [[a#intro]]", 9}};
+        fm["notes/a.md"] = QJsonObject{{"title", "A"}, {"tags", QJsonArray{"x", "y"}}, {"status", "draft"}};
+        resolves["b"] = {"resolved", "b.md", {}};
+        resolves["dup"] = {"ambiguous", "", {"x/dup.md", "y/dup.md"}};
+        resolves["nope"] = {"unresolved", "", {}};
+        queryRows = QJsonArray{QJsonObject{{"path", "inbox/todo.md"}, {"line", 3}, {"text", "buy milk"}, {"done", false}},
+                               QJsonObject{{"path", "work/plan.md"}, {"line", 12}, {"text", "write the report"}, {"done", false}}};
+    }
+    BridgeStatus gate() {
+        ++indexCalls;
+        if (delayMs > 0) QThread::msleep(ulong(delayMs));
+        return forced;
+    }
+    BridgeStatus links(const QString &p, QList<LinkRow> *o) override { calls << "links:" + p; if (auto s = gate(); s != BridgeStatus::Ok) return s; if (!outgoing.contains(p)) return BridgeStatus::NotFound; *o = outgoing[p]; return BridgeStatus::Ok; }
+    BridgeStatus backlinks(const QString &p, int limit, int offset, QList<LinkRow> *o) override {
+        calls << "backlinks:" + p; backlinkLimit = limit; backlinkOffset = offset;
+        if (auto s = gate(); s != BridgeStatus::Ok) return s;
+        *o = incoming.value(p).mid(offset, limit);
+        return BridgeStatus::Ok;
+    }
+    BridgeStatus resolve(const QString &n, ResolveResult *o) override { calls << "resolve:" + n; if (auto s = gate(); s != BridgeStatus::Ok) return s; *o = resolves.value(n, ResolveResult{"unresolved", "", {}}); return BridgeStatus::Ok; }
+    BridgeStatus frontmatter(const QString &p, QJsonObject *o) override { calls << "frontmatter:" + p; if (auto s = gate(); s != BridgeStatus::Ok) return s; if (!fm.contains(p)) return BridgeStatus::NotFound; *o = fm[p]; return BridgeStatus::Ok; }
+    BridgeStatus query(const QJsonObject &spec, QJsonArray *rows) override { calls << "query"; querySpecs << spec; if (auto s = gate(); s != BridgeStatus::Ok) return s; *rows = queryRows; return BridgeStatus::Ok; }
+    BridgeStatus open(const QString &p, const QString &w) override { calls << "open:" + p + "@" + w; opened << p + "@" + w; return forced; }
+    BridgeStatus rename(const QString &p, const QString &n, bool ul, QString *np) override {
+        calls << "rename:" + p + "->" + n + (ul ? "+links" : ""); renamed << p + "->" + n + (ul ? "+links" : "");
+        if (forced != BridgeStatus::Ok) return forced;
+        *np = QFileInfo(p).path() == "." ? n : QFileInfo(p).path() + "/" + n;
+        return BridgeStatus::Ok;
+    }
+};
+struct FakePanel : PanelBridge {
+    QStringList shown, removed;
+    QMap<QString, QList<PanelBlock>> blocks;
+    QMap<QString, QString> errors;
+    int updates = 0;
+    void showPanel(const QString &q, const QString &t, const QString &i) override { shown << q + "|" + t + "|" + i; }
+    void updatePanel(const QString &q, const QList<PanelBlock> &b, const QString &e) override { ++updates; blocks[q] = b; errors[q] = e; }
+    void removePanel(const QString &q) override { removed << q; }
+};
+struct FakeEditor : EditorHooksBridge {
+    QList<QPair<quint64, QList<CompletionItem>>> completions;
+    QList<QPair<quint64, bool>> links;
+    void completionReply(quint64 t, const QList<CompletionItem> &i) override { completions << qMakePair(t, i); }
+    void linkActivationReply(quint64 t, bool h) override { links << qMakePair(t, h); }
+};
+
 struct FakeUi : UiBridge {
     QStringList notes;
     int prompts = 0;
@@ -140,7 +203,9 @@ struct FakeTheme : ThemeBridge {
 struct Rig {
     TmpEnv env;
     FakeNote note;
-    FakeLib lib;
+    FakeIndexLib lib;
+    FakePanel panel;
+    FakeEditor editor;
     FakeUi ui;
     FakeNet net;
     FakeClip clip;
@@ -149,7 +214,7 @@ struct Rig {
     std::unique_ptr<PluginManager> mgr;
     Rig() {
         ManagerConfig c;
-        c.bridges = {&lib, &ui, &net, &clip, &theme};
+        c.bridges = {&lib, &ui, &net, &clip, &theme, &panel, &editor};
         c.logger = [this](int, const QString &id, const QString &m) { logs << id + ": " + m; };
         mgr = std::make_unique<PluginManager>(c);
         mgr->scan();
@@ -161,8 +226,8 @@ struct Rig {
         if (all) consent = mgr->info(r.id).manifest.permissions;
         return mgr->consent(r.id, consent, err) && mgr->enable(r.id, err);
     }
-    bool addLua(const QString &id, const QStringList &perms, const QByteArray &lua, const QStringList &hosts = {}, QString *err = nullptr) {
-        return setup(writePlugin(env.src(), id, perms, lua, hosts), {}, true, err);
+    bool addLua(const QString &id, const QStringList &perms, const QByteArray &lua, const QStringList &hosts = {}, QString *err = nullptr, int api = 1) {
+        return setup(writePlugin(env.src(), id, perms, lua, hosts, api), {}, true, err);
     }
     QStringList logsOf(const QString &id) const {
         QStringList r;

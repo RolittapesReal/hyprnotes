@@ -853,6 +853,7 @@ void VisualEdit::paintEvent(QPaintEvent *e)
         const int x0 = qRound(margin + b.blockFormat().leftMargin()), y = qRound(r.center().y()) - dy;
         p.fillRect(QRect(x0, y, qMax(0, int(vw - margin) - x0), 1), col);
     }
+    if (overlayPaint) overlayPaint(p);
 }
 
 void VisualEdit::mousePressEvent(QMouseEvent *e)
@@ -972,6 +973,15 @@ void SourceEdit::keyPressEvent(QKeyEvent *e)
         QPlainTextEdit::keyPressEvent(e);
     }
     if (kind == TxKind::Typing && !m_preedit && afterTyping && e->text().size() == 1 && !textCursor().hasSelection()) afterTyping();
+}
+
+void SourceEdit::paintEvent(QPaintEvent *e)
+{
+    QPlainTextEdit::paintEvent(e);
+    if (!overlayPaint) return;
+    QPainter p(viewport());
+    p.setClipRect(e->rect());
+    overlayPaint(p);
 }
 
 void SourceEdit::inputMethodEvent(QInputMethodEvent *e)

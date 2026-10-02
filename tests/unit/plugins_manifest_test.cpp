@@ -39,7 +39,7 @@ private slots:
         QTest::newRow("author empty") << "author" << QJsonValue("  ") << "author";
         QTest::newRow("description ctl") << "description" << QJsonValue("a\x01z") << "description";
         QTest::newRow("homepage ftp") << "homepage" << QJsonValue("ftp://x.org") << "homepage";
-        QTest::newRow("api 2") << "api" << QJsonValue(2) << "API";
+        QTest::newRow("api 3") << "api" << QJsonValue(3) << "API";
         QTest::newRow("api 0") << "api" << QJsonValue(0) << "API";
         QTest::newRow("api string") << "api" << QJsonValue("1") << "api";
         QTest::newRow("api 1.5") << "api" << QJsonValue(1.5) << "api";

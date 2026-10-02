@@ -1,0 +1,12 @@
+{
+  "id": "link-completion",
+  "name": "Link Completion",
+  "version": "1.0.0",
+  "author": "Hyprnotes examples",
+  "description": "Type [[ and get a completion popup of your notes. Names that more than one note shares are inserted with their folder so the link stays unambiguous.",
+  "api": 2,
+  "tier": "script",
+  "entry": "main.lua",
+  "permissions": ["editor.complete", "notes.read", "notes.index"],
+  "min_app": "0.1.0"
+}

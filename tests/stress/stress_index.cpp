@@ -1,5 +1,6 @@
 // P8.3 index/search: 1000 and 10000 notes of 20 KiB, p95 first page, superseding-query burst, hostile FTS fuzz.
 #include "hn/core/library_index.h"
+#include <QJsonArray>
 #include "stress_util.h"
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -158,10 +159,82 @@ static void runScale(int N, bool assertTargets) {
     }
 }
 
+
+// Plugin API v2 core: link graph / backlinks / constrained queries / rename rewrite at 10,000 notes x ~20 links.
+static void runGraphScale(int N) {
+    note(QString("== 3.3 link graph + queries: %1 notes x ~20 links").arg(N));
+    Sandbox sb(QString("graph%1").arg(N));
+    Rng rng(777);
+    Stopwatch gen;
+    for (int i = 0; i < N; ++i) {
+        QByteArray md;
+        if (i % 10 == 0) md += QString("---\ntitle: Titled %1\ntags: [t%2, all]\nrating: %3\n---\n").arg(i).arg(i % 7).arg(i % 10).toUtf8();
+        md += QString("# Note %1\n\n#topic%2 intro\n\n").arg(i).arg(i % 13).toUtf8();
+        for (int k = 0; k < 20; ++k) {
+            const int j = rng.bounded(N);
+            md += (k % 9 == 8 ? QString("![[note%1]]").arg(j) : k % 7 == 6 ? QString("[[d%1/note%2|alias]]").arg(j % 25).arg(j) : QString("link [[note%1]] with words").arg(j)).toUtf8() + "\n\n";
+        }
+        if (i % 50 == 1) md += "hub [[note0]]\n\n";
+        md += "- [ ] todo\n- [x] done\n";
+        writeFile(sb.notes + QString("/d%1/note%2.md").arg(i % 25).arg(i), md);
+    }
+    metric("graph.fixture_gen", gen.ms(), "ms");
+    LibraryIndex idx(sb.notes, sb.cache);
+    bool done = false;
+    QObject::connect(&idx, &LibraryIndex::synced, [&](quint64, int, int, int) { done = true; });
+    Stopwatch sw; idx.sync();
+    check(waitFor([&] { return done; }, 1200000), "graph index completes");
+    metric("graph.cold_index_ms", sw.ms(), "ms");
+    metric("graph.db_bytes", double(QFileInfo(idx.databasePath()).size()), "bytes");
+    check(idx.count() == N, "all notes indexed");
+    Dist bl, q, lf;
+    for (int rep = 0; rep < 3; ++rep)
+        for (int i = 0; i < 300; ++i) {
+            const int j = (i * 31 + rep) % N;
+            Stopwatch s; auto p = idx.backlinks(QString("d%1/note%2.md").arg(j % 25).arg(j), 50, 0); bl.add(s.ms()); (void)p;
+            Stopwatch s2; idx.linksFrom(QString("d%1/note%2.md").arg(j % 25).arg(j)); lf.add(s2.ms());
+        }
+    bl.report("graph.backlinks_first_page"); lf.report("graph.links_from");
+    soft(bl.pct(0.95) < 50.0, QString("backlinks p95 %1 ms < 50 ms").arg(bl.pct(0.95)));
+    const QList<QJsonObject> specs{
+        {{"from", "notes"}, {"where", QJsonArray{QJsonObject{{"field", "folder"}, {"op", "="}, {"value", "d3"}}}}, {"limit", 50}},
+        {{"from", "notes"}, {"where", QJsonArray{QJsonObject{{"field", "tag"}, {"op", "="}, {"value", "t3"}}}}, {"limit", 50}},
+        {{"from", "notes"}, {"where", QJsonArray{QJsonObject{{"field", "meta.rating"}, {"op", ">="}, {"value", 8}}}}, {"order", QJsonArray{QJsonObject{{"field", "meta.rating"}, {"dir", "desc"}}}}, {"limit", 50}},
+        {{"from", "tasks"}, {"where", QJsonArray{QJsonObject{{"field", "done"}, {"op", "="}, {"value", false}}}}, {"limit", 50}},
+        {{"from", "links"}, {"where", QJsonArray{QJsonObject{{"field", "kind"}, {"op", "="}, {"value", "embed"}}}}, {"limit", 50}},
+        {{"from", "links"}, {"where", QJsonArray{QJsonObject{{"field", "target"}, {"op", "="}, {"value", "note0"}}}}, {"limit", 50}}};
+    for (int rep = 0; rep < 20; ++rep)
+        for (const auto &s : specs) { Stopwatch t; auto r = idx.query(s); q.add(t.ms()); if (!r.ok) check(false, "query ok: " + r.error); }
+    q.report("graph.query_first_page");
+    soft(q.pct(0.95) < 50.0, QString("query p95 %1 ms < 50 ms").arg(q.pct(0.95)));
+    // async superseding burst: 500 queries, only the newest may report
+    int fin = 0;
+    auto c = QObject::connect(&idx, &LibraryIndex::queryFinished, [&](const QueryResult &) { ++fin; });
+    for (int i = 0; i < 500; ++i) idx.queryAsync(specs[i % specs.size()]);
+    waitFor([&] { return fin > 0; }, 10000); waitFor([] { return false; }, 300);
+    metric("graph.superseded_query_results_delivered", fin);
+    check(fin >= 1 && fin < 50, "superseded graph queries are cancelled");
+    QObject::disconnect(c);
+    Stopwatch rw; auto edits = idx.rewriteLinksForRename("d0/note0.md", "renamed/hub.md");
+    metric("graph.rename_rewrite_hub_ms", rw.ms(), "ms"); metric("graph.rename_rewrite_files", edits.size());
+    check(edits.size() >= N / 50, "rename rewrite finds every hub referrer");
+    // incremental update latency
+    Dist inc;
+    for (int i = 0; i < 40; ++i) {
+        const QString rel = QString("d%1/note%2.md").arg((i + 5) % 25).arg(i + 5);
+        writeFile(sb.notes + "/" + rel, QString("# edited %1\n[[note%2]] [[brand-new-%1]]\n- [ ] t\n").arg(i).arg(i + 9).toUtf8());
+        bool u = false; auto cc = QObject::connect(&idx, &LibraryIndex::pathUpdated, [&](const QString &, quint64) { u = true; });
+        Stopwatch s; idx.updatePath(rel); waitFor([&] { return u; }, 10000); inc.add(s.ms());
+        QObject::disconnect(cc);
+    }
+    inc.report("graph.incremental_update");
+}
+
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     const QString which = app.arguments().value(1, "all");
     if (which == "all" || which == "1000") runScale(1000, true);
     if (which == "all" || which == "10000") runScale(10000, false);
+    if (which == "all" || which == "graph") runGraphScale(10000);
     return finish("stress_index");
 }

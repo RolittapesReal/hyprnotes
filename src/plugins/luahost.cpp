@@ -66,7 +66,12 @@ struct PluginState {
     qint64 deadlineUs = 0, instrs = 0, maxInstrs = 0;
     bool aborted = false;
     char abortMsg[64] = {0};
-    RateLimiter notify, http;
+    RateLimiter notify, http, index, panelRefresh;
+    // API 2: index time spent in the running callback, note opens, panel click tokens (token -> registry ref, per panel)
+    qint64 indexWallUs = 0;
+    int opens = 0, clickSeq = 0;
+    QHash<QString, QHash<int, int>> clicks;
+    QString renderingPanel;
     bool storageLoaded = false, storageDirty = false;
     QJsonObject kv, settings;
 
@@ -410,16 +415,20 @@ const QStringList &eventNames() {
     static const QStringList e{"app.started", "note.opened", "note.changed", "note.saved", "note.closed", "selection.changed", "note.pre_save"};
     return e;
 }
+void markLinkHandler(PluginState *p, bool pattern);
 int l_on(lua_State *L) {
     return guarded(L, [&](QString &err) -> int {
         PluginState *p = P(L);
         QString event;
         if (!argStr(L, 1, event, 64, err) || !lua_isfunction(L, 2)) { if (err.isEmpty()) err = QStringLiteral("bad argument #2 (function expected)"); return -1; }
-        if (!eventNames().contains(event)) { err = QStringLiteral("unknown event '%1'").arg(event); return -1; }
+        const bool linkEvent = event == QLatin1String("link.activate") && p->m.api >= 2;
+        if (!eventNames().contains(event) && !linkEvent) { err = QStringLiteral("unknown event '%1'").arg(event); return -1; }
+        if (linkEvent) NEED("editor.links");
         if (p->ev[event].size() >= kMaxHandlers) { err = QStringLiteral("too many handlers for %1").arg(event); return -1; }
         lua_pushvalue(L, 2);
         p->ev[event].append(luaL_ref(L, LUA_REGISTRYINDEX));
         if (!p->regs.events.contains(event)) p->regs.events << event;
+        if (linkEvent) markLinkHandler(p, false);
         p->regsDirty = true;
         return 0;
     });
@@ -585,6 +594,441 @@ int ns_delete(lua_State *L) {
         return 1;
     });
 }
+
+// ================= Plugin API v2 (api >= 2 plugins only; the functions do not exist for api 1) =================
+constexpr int kMaxIdxRows = 500, kMaxIdxStr = 64 * 1024, kMaxIdxDepth = 6, kMaxIdxNodes = 50000;
+constexpr int kMaxOpensPerCallback = 5, kMaxPanels = 16, kMaxCompletes = 16;
+constexpr int kMaxBlocks = 200, kMaxCompleteItems = 50;
+constexpr qint64 kMaxPanelBytes = 256 * 1024;
+
+// UTF-8 aware cut to at most `max` bytes (never splits a character).
+QString capUtf8(const QString &s, int max) {
+    if (s.size() * 3 <= max) return s;
+    QByteArray b = s.toUtf8();
+    if (b.size() <= max) return s;
+    int cut = max;
+    while (cut > 0 && (uchar(b[cut]) & 0xC0) == 0x80) --cut;
+    return QString::fromUtf8(b.constData(), cut);
+}
+QJsonValue capJson(const QJsonValue &v, int depth, int &nodes) {  // result of a bridge call: bound strings, depth and element count
+    if (++nodes > kMaxIdxNodes) return QJsonValue(QJsonValue::Null);
+    switch (v.type()) {
+    case QJsonValue::String: return capUtf8(v.toString(), kMaxIdxStr);
+    case QJsonValue::Array: {
+        if (depth >= kMaxIdxDepth) return QJsonValue(QJsonValue::Null);
+        QJsonArray a;
+        for (const auto &x : v.toArray()) { if (nodes > kMaxIdxNodes) break; a.append(capJson(x, depth + 1, nodes)); }
+        return a;
+    }
+    case QJsonValue::Object: {
+        if (depth >= kMaxIdxDepth) return QJsonValue(QJsonValue::Null);
+        QJsonObject o;
+        const auto src = v.toObject();
+        for (auto it = src.begin(); it != src.end(); ++it) { if (nodes > kMaxIdxNodes) break; o.insert(capUtf8(it.key(), 256), capJson(it.value(), depth + 1, nodes)); }
+        return o;
+    }
+    case QJsonValue::Double: { const double x = v.toDouble(); return (x != x || x - x != 0) ? QJsonValue(QJsonValue::Null) : v; }
+    default: return v;
+    }
+}
+
+bool indexRateOk(lua_State *L) {
+    PluginState *p = P(L);
+    if (p->index.allow(p->d->env.indexPerSecond, 1'000'000)) return true;
+    auditLog(L, "denied", QStringLiteral("index rate limit (%1/s)").arg(p->d->env.indexPerSecond));
+    return false;
+}
+// Runs one bridge call under the index budgets. The time spent is host time: it is excluded from the callback deadline
+// (like ui/http) but bounded per call and per callback, so a plugin cannot turn it into a stall.
+template <class F> BridgeStatus timedIndex(lua_State *L, F &&call) {
+    PluginState *p = P(L);
+    const auto &env = p->d->env;
+    if (p->indexWallUs >= qint64(env.indexCallbackMs) * 1000) {
+        auditLog(L, "denied", QStringLiteral("index time budget for one callback (%1 ms)").arg(env.indexCallbackMs));
+        return BridgeStatus::Timeout;
+    }
+    const qint64 t0 = nowUs();
+    BridgeStatus s = call();
+    const qint64 dt = nowUs() - t0;
+    p->deadlineUs += dt;
+    p->indexWallUs += dt;
+    if (s == BridgeStatus::Ok && dt > qint64(env.indexCallMs) * 1000) s = BridgeStatus::Timeout;  // too late: discard the result
+    if (s == BridgeStatus::Timeout) auditLog(L, "denied", QStringLiteral("index call exceeded %1 ms").arg(env.indexCallMs));
+    return s;
+}
+// nil, "<reason>" for the non-Ok outcomes (soft failures: the plugin can handle them without raising)
+int statusResult(lua_State *L, BridgeStatus s, const QString &what = QString()) {
+    const PluginState *p = P(L);
+    QString m;
+    switch (s) {
+    case BridgeStatus::Timeout: m = QStringLiteral("timeout: index call exceeded %1 ms").arg(p->d->env.indexCallMs); break;
+    case BridgeStatus::Unsupported: m = QStringLiteral("unsupported: this host does not provide %1").arg(what.isEmpty() ? QStringLiteral("the call") : what); break;
+    case BridgeStatus::Invalid: m = QStringLiteral("invalid request"); break;
+    case BridgeStatus::NotFound: m = QStringLiteral("not found"); break;
+    case BridgeStatus::Ok: m = QStringLiteral("error"); break;
+    }
+    lua_pushnil(L);
+    pushQRaw(L, m);
+    return 2;
+}
+int rateLimited(lua_State *L) { lua_pushnil(L); lua_pushliteral(L, "rate limit exceeded"); return 2; }
+
+bool optTable(lua_State *L, int i, QString &err) {
+    if (lua_isnoneornil(L, i) || lua_istable(L, i)) return true;
+    err = QStringLiteral("bad argument #%1 (table expected)").arg(i);
+    return false;
+}
+// Optional integer option in [lo, hi]; absent keeps `out`.
+bool optInt(lua_State *L, int t, const char *k, int lo, int hi, int &out, QString &err) {
+    if (!lua_istable(L, t)) return true;
+    getRaw(L, t, k);
+    bool ok = true;
+    if (!lua_isnil(L, -1)) {
+        int isint = 0;
+        const lua_Integer v = lua_tointegerx(L, -1, &isint);
+        if (lua_type(L, -1) != LUA_TNUMBER || !isint || v < lo || v > hi) { err = QStringLiteral("option '%1' must be an integer between %2 and %3").arg(QLatin1String(k)).arg(lo).arg(hi); ok = false; }
+        else out = int(v);
+    }
+    lua_pop(L, 1);
+    return ok;
+}
+bool validNewName(const QString &s) {
+    if (s.isEmpty() || s.toUtf8().size() > 200 || s == QLatin1String(".") || s == QLatin1String("..") || s.startsWith(QLatin1Char('.'))) return false;
+    for (QChar c : s) if (c.unicode() < 0x20 || c.unicode() == 0x7f || c == QLatin1Char('/') || c == QLatin1Char('\\')) return false;
+    return true;
+}
+
+bool pushLinkRows(lua_State *L, const QList<LinkRow> &rows, QString &err) {
+    const int n = int(qMin<qsizetype>(rows.size(), kMaxIdxRows));
+    size_t cost = 64;
+    QList<LinkRow> r;
+    for (int i = 0; i < n; ++i) {
+        LinkRow x = rows[i];
+        for (QString *f : {&x.kind, &x.target, &x.alias, &x.anchor, &x.resolved, &x.src, &x.context}) *f = capUtf8(*f, kMaxIdxStr);
+        cost += 600 + size_t(x.kind.size() + x.target.size() + x.alias.size() + x.anchor.size() + x.resolved.size() + x.src.size() + x.context.size()) * 3;
+        r << x;
+    }
+    if (!hostFits(L, cost)) { err = QString::fromLatin1(kTooBig); return false; }
+    lua_createtable(L, n, 0);
+    for (int i = 0; i < n; ++i) {
+        const LinkRow &x = r[i];
+        lua_createtable(L, 0, 8);
+        auto put = [&](const char *k, const QString &v, bool always) { if (!always && v.isEmpty()) return; pushQRaw(L, v); lua_setfield(L, -2, k); };
+        put("kind", x.kind.isEmpty() ? QStringLiteral("link") : x.kind, true);
+        put("target", x.target, true);
+        put("alias", x.alias, false);
+        put("anchor", x.anchor, false);
+        put("resolved", x.resolved, false);
+        put("src", x.src, false);
+        put("context", x.context, false);
+        lua_pushinteger(L, x.line); lua_setfield(L, -2, "line");
+        lua_rawseti(L, -2, i + 1);
+    }
+    return true;
+}
+
+#define NEED_LIB_PATH(var) \
+    LibraryBridge *lb; QString var; \
+    if (!needLib(L, &lb, err) || !argStr(L, 1, var, 512, err)) return -1; \
+    if (!validNotePath(var)) { err = QStringLiteral("invalid note path"); return -1; }
+
+int ns_links(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("notes.index");
+        NEED_LIB_PATH(path)
+        if (!indexRateOk(L)) return rateLimited(L);
+        QList<LinkRow> rows;
+        const auto s = timedIndex(L, [&] { return lb->links(path, &rows); });
+        if (s != BridgeStatus::Ok) return statusResult(L, s, QStringLiteral("links"));
+        if (!pushLinkRows(L, rows, err)) return -1;
+        return 1;
+    });
+}
+int ns_backlinks(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("notes.index");
+        NEED_LIB_PATH(path)
+        int limit = 50, offset = 0;
+        if (!optTable(L, 2, err) || !optInt(L, 2, "limit", 1, kMaxIdxRows, limit, err) || !optInt(L, 2, "offset", 0, 100000, offset, err)) return -1;
+        if (!indexRateOk(L)) return rateLimited(L);
+        QList<LinkRow> rows;
+        const auto s = timedIndex(L, [&] { return lb->backlinks(path, limit, offset, &rows); });
+        if (s != BridgeStatus::Ok) return statusResult(L, s, QStringLiteral("backlinks"));
+        if (rows.size() > limit) rows = rows.mid(0, limit);
+        if (!pushLinkRows(L, rows, err)) return -1;
+        return 1;
+    });
+}
+int ns_resolve(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("notes.index");
+        LibraryBridge *lb;
+        QString name;
+        if (!needLib(L, &lb, err) || !argStr(L, 1, name, 512, err)) return -1;
+        if (name.isEmpty() || name.size() > 256) { err = QStringLiteral("bad argument #1 (1-256 characters expected)"); return -1; }
+        for (QChar c : name) if (c.unicode() < 0x20 || c.unicode() == 0x7f) { err = QStringLiteral("bad argument #1 (control characters are not allowed)"); return -1; }
+        if (!indexRateOk(L)) return rateLimited(L);
+        ResolveResult rr;
+        const auto s = timedIndex(L, [&] { return lb->resolve(name, &rr); });
+        if (s != BridgeStatus::Ok) return statusResult(L, s, QStringLiteral("resolve"));
+        const QStringList cand = rr.candidates.mid(0, 20);
+        size_t cost = 400 + size_t(rr.status.size() + rr.path.size()) * 3;
+        for (const auto &c : cand) cost += 64 + size_t(c.size()) * 3;
+        if (!hostFits(L, cost)) { err = QString::fromLatin1(kTooBig); return -1; }
+        lua_createtable(L, 0, 3);
+        pushQRaw(L, rr.status.isEmpty() ? QStringLiteral("unresolved") : capUtf8(rr.status, 32)); lua_setfield(L, -2, "status");
+        if (!rr.path.isEmpty()) { pushQRaw(L, capUtf8(rr.path, 4096)); lua_setfield(L, -2, "path"); }
+        lua_createtable(L, int(cand.size()), 0);
+        for (int i = 0; i < cand.size(); ++i) { pushQRaw(L, capUtf8(cand[i], 4096)); lua_rawseti(L, -2, i + 1); }
+        lua_setfield(L, -2, "candidates");
+        return 1;
+    });
+}
+int ns_frontmatter(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("notes.index");
+        NEED_LIB_PATH(path)
+        if (!indexRateOk(L)) return rateLimited(L);
+        QJsonObject fm;
+        const auto s = timedIndex(L, [&] { return lb->frontmatter(path, &fm); });
+        if (s != BridgeStatus::Ok) return statusResult(L, s, QStringLiteral("frontmatter"));
+        int nodes = 0;
+        if (!pushJsonChecked(L, capJson(fm, 0, nodes))) { err = QString::fromLatin1(kTooBig); return -1; }
+        return 1;
+    });
+}
+
+// ---- query spec: shape/size validation. Only a rebuilt, normalised spec ever reaches the bridge; there is no SQL anywhere. ----
+bool validFieldName(const QString &f) {
+    static const QRegularExpression re(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]{0,31}(\\.[A-Za-z0-9_-]{1,32})?$"));
+    return re.match(f).hasMatch();
+}
+bool scalarOk(const QJsonValue &v, int maxStr) { return v.isBool() || v.isDouble() || (v.isString() && v.toString().toUtf8().size() <= maxStr); }
+bool validateQuery(const QJsonValue &in, QJsonObject *norm, QString &err) {
+    auto bad = [&](const QString &m) { err = QStringLiteral("invalid query: ") + m; return false; };
+    if (!in.isObject()) return bad(QStringLiteral("a table with keys from/where/order/select/limit/offset is required"));
+    const QJsonObject o = in.toObject();
+    static const QSet<QString> keys{"from", "where", "order", "select", "limit", "offset"};
+    for (auto it = o.begin(); it != o.end(); ++it) if (!keys.contains(it.key())) return bad(QStringLiteral("unknown key '%1'").arg(it.key().left(40)));
+    if (QJsonDocument(o).toJson(QJsonDocument::Compact).size() > 8192) return bad(QStringLiteral("spec is larger than 8 KiB"));
+    QJsonObject n;
+    const QString from = o.value("from").toString();
+    if (!o.value("from").isString() || (from != QLatin1String("notes") && from != QLatin1String("tasks") && from != QLatin1String("links"))) return bad(QStringLiteral("'from' must be \"notes\", \"tasks\" or \"links\""));
+    n["from"] = from;
+    auto listOf = [&](const char *k, int max, QJsonArray &out) -> bool {
+        const auto v = o.value(QLatin1String(k));
+        if (v.isUndefined()) return true;
+        if (!v.isArray() || v.toArray().size() > max) { err = QStringLiteral("invalid query: '%1' must be a list of at most %2 entries").arg(QLatin1String(k)).arg(max); return false; }
+        out = v.toArray();
+        return true;
+    };
+    QJsonArray where, order, select;
+    if (!listOf("where", 16, where) || !listOf("order", 4, order) || !listOf("select", 16, select)) return false;
+    static const QSet<QString> ops{"=", "!=", "<", ">", "<=", ">=", "like", "in", "contains"};
+    QJsonArray w2;
+    for (const auto &cv : where) {
+        if (!cv.isObject()) return bad(QStringLiteral("each 'where' entry must be a table {field, op, value}"));
+        const auto c = cv.toObject();
+        for (auto it = c.begin(); it != c.end(); ++it) if (it.key() != QLatin1String("field") && it.key() != QLatin1String("op") && it.key() != QLatin1String("value")) return bad(QStringLiteral("unknown key '%1' in a 'where' entry").arg(it.key().left(40)));
+        const QString f = c.value("field").toString(), op = c.value("op").toString();
+        if (!c.value("field").isString() || !validFieldName(f)) return bad(QStringLiteral("bad field name"));
+        if (!c.value("op").isString() || !ops.contains(op)) return bad(QStringLiteral("bad operator"));
+        const auto val = c.value("value");
+        if (op == QLatin1String("in")) {
+            if (!val.isArray() || val.toArray().isEmpty() || val.toArray().size() > 64) return bad(QStringLiteral("'in' needs a list of 1-64 values"));
+            for (const auto &x : val.toArray()) if (!scalarOk(x, 256)) return bad(QStringLiteral("'in' values must be short strings, numbers or booleans"));
+        } else if (!scalarOk(val, op == QLatin1String("like") || op == QLatin1String("contains") ? 256 : 1024)) return bad(QStringLiteral("'value' must be a string, number or boolean of reasonable size"));
+        w2.append(QJsonObject{{"field", f}, {"op", op}, {"value", val}});
+    }
+    QJsonArray o2;
+    for (const auto &cv : order) {
+        if (!cv.isObject()) return bad(QStringLiteral("each 'order' entry must be a table {field, dir}"));
+        const auto c = cv.toObject();
+        for (auto it = c.begin(); it != c.end(); ++it) if (it.key() != QLatin1String("field") && it.key() != QLatin1String("dir")) return bad(QStringLiteral("unknown key '%1' in an 'order' entry").arg(it.key().left(40)));
+        const QString f = c.value("field").toString(), dir = c.contains("dir") ? c.value("dir").toString() : QStringLiteral("asc");
+        if (!c.value("field").isString() || !validFieldName(f)) return bad(QStringLiteral("bad field name in 'order'"));
+        if (dir != QLatin1String("asc") && dir != QLatin1String("desc")) return bad(QStringLiteral("'dir' must be \"asc\" or \"desc\""));
+        o2.append(QJsonObject{{"field", f}, {"dir", dir}});
+    }
+    QJsonArray s2;
+    for (const auto &sv : select) {
+        if (!sv.isString() || !validFieldName(sv.toString())) return bad(QStringLiteral("bad field name in 'select'"));
+        s2.append(sv.toString());
+    }
+    auto num = [&](const char *k, double lo, double hi, double def, bool clamp, double *out) {
+        const auto v = o.value(QLatin1String(k));
+        if (v.isUndefined()) { *out = def; return true; }
+        const double d = v.toDouble();
+        if (!v.isDouble() || d != double(qint64(d)) || d < lo || (!clamp && d > hi)) return false;
+        *out = qMin(d, hi);
+        return true;
+    };
+    double limit, offset;
+    if (!num("limit", 1, kMaxIdxRows, 100, true, &limit)) return bad(QStringLiteral("'limit' must be an integer >= 1 (values above 500 are capped to 500)"));
+    if (!num("offset", 0, 100000, 0, false, &offset)) return bad(QStringLiteral("'offset' must be an integer between 0 and 100000"));
+    n["where"] = w2; n["order"] = o2; n["select"] = s2;
+    n["limit"] = int(limit); n["offset"] = int(offset);
+    *norm = n;
+    return true;
+}
+int ns_query(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("notes.index");
+        LibraryBridge *lb;
+        if (!needLib(L, &lb, err)) return -1;
+        if (!lua_istable(L, 1)) { err = QStringLiteral("bad argument #1 (table expected)"); return -1; }
+        QJsonValue spec;
+        int nodes = 200000 - 1500;  // toJson allows 200 000 nodes; a query spec gets 1500
+        if (!toJson(L, 1, 0, nodes, spec, err)) { err = QStringLiteral("invalid query: ") + err; auditLog(L, "denied", QStringLiteral("malformed query spec")); return -1; }
+        QJsonObject norm;
+        if (!validateQuery(spec, &norm, err)) { auditLog(L, "denied", QStringLiteral("rejected query spec")); return -1; }
+        if (!indexRateOk(L)) return rateLimited(L);
+        QJsonArray rows;
+        const auto s = timedIndex(L, [&] { return lb->query(norm, &rows); });
+        if (s != BridgeStatus::Ok) return statusResult(L, s, QStringLiteral("query"));
+        QJsonArray capped;
+        int n2 = 0;
+        for (const auto &r : rows) { if (capped.size() >= kMaxIdxRows) break; capped.append(capJson(r, 0, n2)); }
+        if (!pushJsonChecked(L, capped)) { err = QString::fromLatin1(kTooBig); return -1; }
+        return 1;
+    });
+}
+int ns_open(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("notes.read");
+        NEED_LIB_PATH(path)
+        QString where = QStringLiteral("organizer");
+        if (!optTable(L, 2, err)) return -1;
+        if (lua_istable(L, 2) && !fieldStr(L, 2, "where", where, 16, false, err)) return -1;
+        if (where != QLatin1String("organizer") && where != QLatin1String("sticky")) { err = QStringLiteral("where must be \"organizer\" or \"sticky\""); return -1; }
+        PluginState *p = P(L);
+        if (++p->opens > kMaxOpensPerCallback) { err = QStringLiteral("too many notes opened in one callback (max %1)").arg(kMaxOpensPerCallback); return -1; }
+        const auto s = lb->open(path, where);
+        if (s != BridgeStatus::Ok) return statusResult(L, s, QStringLiteral("open"));
+        lua_pushboolean(L, 1);
+        return 1;
+    });
+}
+int ns_rename(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("notes.write");
+        NEED_LIB_PATH(path)
+        QString name;
+        if (!argStr(L, 2, name, 512, err)) return -1;
+        if (!validNewName(name)) { err = QStringLiteral("invalid new name (a plain file name: no '/', no leading '.', at most 200 bytes)"); return -1; }
+        bool update = false;
+        if (!optTable(L, 3, err)) return -1;
+        if (lua_istable(L, 3)) {
+            getRaw(L, 3, "update_links");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) { lua_pop(L, 1); err = QStringLiteral("option 'update_links' must be a boolean"); return -1; }
+            update = lua_toboolean(L, -1);
+            lua_pop(L, 1);
+        }
+        if (!writeBudget(L, err)) return -1;
+        QString np;
+        const auto s = lb->rename(path, name, update, &np);
+        auditLog(L, "notes.rename", QStringLiteral("%1 -> %2%3").arg(path, name, update ? QStringLiteral(" (update links)") : QString()));
+        if (s != BridgeStatus::Ok) return statusResult(L, s, QStringLiteral("rename"));
+        PUSHQ(capUtf8(np, 4096));
+        return 1;
+    });
+}
+
+// ---- panels ----
+bool fieldFn(lua_State *L, int t, const char *k, bool required, bool *present, QString &err) {
+    getRaw(L, t, k);
+    const bool isFn = lua_isfunction(L, -1), none = lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (present) *present = isFn;
+    if (isFn || (none && !required)) return true;
+    err = QStringLiteral("field '%1' must be a function").arg(QLatin1String(k));
+    return false;
+}
+int l_panel(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("ui.panel");
+        PluginState *p = P(L);
+        QString id, title, icon;
+        bool hasOnEvent = false;
+        if (!regHeader(L, id, title, err) || !fieldStr(L, 1, "icon", icon, 64, false, err) || !fieldFn(L, 1, "render", true, nullptr, err) || !fieldFn(L, 1, "on_event", false, &hasOnEvent, err)) return -1;
+        QStringList on;
+        getRaw(L, 1, "refresh_on");
+        if (lua_istable(L, -1)) {
+            static const QStringList allowed{"note.opened", "note.changed", "note.saved", "note.closed", "selection.changed"};
+            const lua_Unsigned n = lua_rawlen(L, -1);
+            for (lua_Unsigned i = 1; i <= n && i <= 8; ++i) {
+                lua_rawgeti(L, -1, lua_Integer(i));
+                QString e;
+                const bool ok = lua_type(L, -1) == LUA_TSTRING && argStr(L, -1, e, 64, err) && allowed.contains(e);
+                lua_pop(L, 1);
+                if (!ok) { lua_pop(L, 1); err = QStringLiteral("refresh_on may only list: %1").arg(allowed.join(QStringLiteral(", "))); return -1; }
+                if (!on.contains(e)) on << e;
+            }
+        } else if (!lua_isnil(L, -1)) { lua_pop(L, 1); err = QStringLiteral("field 'refresh_on' must be a list of event names"); return -1; }
+        lua_pop(L, 1);
+        if (p->cb.contains("panel:" + id) || p->regs.panels.size() >= kMaxPanels) { err = QStringLiteral("duplicate panel id or too many panels"); return -1; }
+        getRaw(L, 1, "render");
+        addCb(L, p, "panel:" + id, -1);
+        lua_pop(L, 1);
+        if (hasOnEvent) { getRaw(L, 1, "on_event"); addCb(L, p, "pev:" + id, -1); lua_pop(L, 1); }
+        p->regs.panels.append({p->m.id, id, title, icon, on, hasOnEvent});
+        return 0;
+    });
+}
+int l_panel_refresh(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("ui.panel");
+        PluginState *p = P(L);
+        QString id;
+        if (!argStr(L, 1, id, 64, err)) return -1;
+        if (!p->cb.contains("panel:" + id)) { err = QStringLiteral("unknown panel '%1'").arg(id); return -1; }
+        if (p->renderingPanel == id) { lua_pushboolean(L, 0); return 1; }  // a render cannot ask for itself
+        if (!p->panelRefresh.allow(10, 1'000'000)) { auditLog(L, "denied", QStringLiteral("panel refresh rate limit (10/s)")); lua_pushboolean(L, 0); return 1; }
+        emit p->d->q->panelRefreshRequested(p->m.id, id, p->note);
+        lua_pushboolean(L, 1);
+        return 1;
+    });
+}
+
+// ---- completion / link handlers ----
+int l_complete(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("editor.complete");
+        PluginState *p = P(L);
+        QString id, trigger;
+        if (!lua_istable(L, 1)) { err = QStringLiteral("a table argument is required"); return -1; }
+        if (!fieldStr(L, 1, "id", id, 64, true, err) || !fieldStr(L, 1, "trigger", trigger, 32, true, err) || !fieldFn(L, 1, "items", true, nullptr, err)) return -1;
+        if (!validPluginId(id)) { err = QStringLiteral("invalid id '%1'").arg(id); return -1; }
+        bool okTrig = !trigger.isEmpty() && trigger.toUtf8().size() <= 8;
+        for (QChar c : trigger) okTrig = okTrig && c.unicode() > 0x20 && c.unicode() != 0x7f;
+        if (!okTrig) { err = QStringLiteral("trigger must be 1-8 visible characters without spaces, for example \"[[\" or \"/\""); return -1; }
+        if (p->cb.contains("cmp:" + id) || p->regs.completions.size() >= kMaxCompletes) { err = QStringLiteral("duplicate completion id or too many completions"); return -1; }
+        getRaw(L, 1, "items");
+        addCb(L, p, "cmp:" + id, -1);
+        lua_pop(L, 1);
+        p->regs.completions.append({p->m.id, id, trigger});
+        return 0;
+    });
+}
+void markLinkHandler(PluginState *p, bool pattern) {
+    p->regsDirty = true;
+    for (auto &h : p->regs.linkHandlers) { h.hasPattern |= pattern; return; }
+    p->regs.linkHandlers.append({p->m.id, pattern});
+}
+int l_link_handler(lua_State *L) {
+    return guarded(L, [&](QString &err) -> int {
+        NEED("editor.links");
+        PluginState *p = P(L);
+        bool hasPattern = false;
+        if (!lua_istable(L, 1)) { err = QStringLiteral("a table argument is required"); return -1; }
+        if (!fieldFn(L, 1, "pattern", false, &hasPattern, err)) return -1;
+        if (p->cb.contains(QStringLiteral("linkpat"))) { err = QStringLiteral("hn.link_handler was already called"); return -1; }
+        if (hasPattern) { getRaw(L, 1, "pattern"); addCb(L, p, QStringLiteral("linkpat"), -1); lua_pop(L, 1); }
+        markLinkHandler(p, hasPattern);
+        return 0;
+    });
+}
+
 
 // ---- hn.ui ----
 bool needUi(lua_State *L, UiBridge **ui, QString &err) {
@@ -1062,6 +1506,16 @@ int buildSandbox(lua_State *L) {
     sub("theme", {{"set_token", th_set}});
     sub("time", {{"now", tm_now}, {"format", tm_format}});
     pushQRaw(L, p->d->env.appVersion); lua_setfield(L, -2, "version");
+    if (p->m.api >= 2) {  // the API-2 surface does not exist at all for "api": 1 plugins
+        fn("panel", l_panel); fn("panel_refresh", l_panel_refresh); fn("complete", l_complete); fn("link_handler", l_link_handler);
+        lua_getfield(L, -1, "notes");
+        for (const auto &f : {std::pair<const char *, lua_CFunction>{"links", ns_links}, {"backlinks", ns_backlinks}, {"resolve", ns_resolve},
+                              {"frontmatter", ns_frontmatter}, {"query", ns_query}, {"open", ns_open}, {"rename", ns_rename}}) {
+            lua_pushcfunction(L, f.second);
+            lua_setfield(L, -2, f.first);
+        }
+        lua_pop(L, 1);
+    }
     lua_setglobal(L, "hn");
     return 0;
 }
@@ -1111,6 +1565,7 @@ void LuaPluginHost::unload(const QString &id) {
     p->mem = 0;
     p->cb.clear();
     p->ev.clear();
+    p->clicks.clear();
 }
 void LuaPluginHost::forget(const QString &id) {
     unload(id);
@@ -1129,6 +1584,8 @@ int budgetMs(const HostEnv &e, Budget b) {
     case Budget::PreSave: return e.preSaveMs;
     case Budget::Trigger: return e.triggerMs;
     case Budget::Load: return e.loadMs;
+    case Budget::Render: return e.renderMs;
+    case Budget::Complete: return e.completeMs;
     }
     return e.eventMs;
 }
@@ -1165,6 +1622,8 @@ CallResult callLua(LuaPluginHost *q, LuaPluginHost::Impl *d, const QString &id, 
     p->note = note;
     p->inTx = false;
     p->noteWrites = p->logLines = 0;
+    p->indexWallUs = 0;
+    p->opens = 0;
     p->aborted = false;
     p->instrs = 0;
     const int ms = budgetMs(d->env, b);
@@ -1181,13 +1640,14 @@ CallResult callLua(LuaPluginHost *q, LuaPluginHost::Impl *d, const QString &id, 
         --pp->hostDepth;
         if (n < 0) return luaL_error(LL, "%s", kTooBig);
         lua_call(LL, n, 1);
+        if (onOk) { ++pp->hostDepth; onOk(LL); --pp->hostDepth; }  // inside the pcall: onOk may raise (luaL_error) to reject a result
         return 1;
     };
     lua_pushlightuserdata(L, &f);
     const int rc = lua_pcall(L, 1, 1, top + 1);
     p->hostDepth = 0;
     if (rc == LUA_OK && p->aborted) r.err = QString::fromLatin1(p->abortMsg);
-    else if (rc == LUA_OK) { r.ok = true; if (onOk) onOk(L); }
+    else if (rc == LUA_OK) r.ok = true;
     else r.err = lua_type(L, -1) == LUA_TSTRING ? QString::fromUtf8(lua_tostring(L, -1)) : QStringLiteral("error");
     lua_settop(L, top);
     if (rc != LUA_OK) { p->aborted = false; p->deadlineUs = nowUs() + 50'000; lua_sethook(L, hookFn, LUA_MASKCOUNT, kHookStep); lua_gc(L, LUA_GCCOLLECT); }  // finalizers stay under the hook
@@ -1286,6 +1746,7 @@ bool LuaPluginHost::run(const QString &id, Kind kind, const QString &localId, No
 
 void LuaPluginHost::deliver(const QString &id, const QString &event, const QString &arg, NoteBridge *note) {
     auto it = d->plugins.find(id);
+    if (event == QLatin1String("link.activate")) return;  // only PluginManager::activateLink delivers it (with a table argument)
     if (it == d->plugins.end() || (*it)->disabled || !(*it)->regs.events.contains(event)) return;
     if (!ensureLoaded(id)) return;
     QList<int> refs = (*d->plugins.find(id))->ev.value(event);
@@ -1340,6 +1801,309 @@ bool LuaPluginHost::runTrigger(const QString &id, const QString &pattern, NoteBr
         }
     });
     return r.ok && got;
+}
+
+
+// ================= API 2: panels, completion, link activation =================
+namespace {
+
+struct BlockCtx {
+    PluginState *p;
+    QList<int> refs;        // registry refs created for on_click (released again if the render is rejected)
+    QHash<int, int> tokens; // token -> ref
+    int count = 0;
+    qint64 textBytes = 0;
+};
+
+// Raw string field with truncation (never rejects for length: the host draws a bounded text).
+bool blkStr(lua_State *L, int t, const char *k, int maxBytes, bool required, QString &out, qint64 &total, QString &err) {
+    getRaw(L, t, k);
+    bool ok = true;
+    if (lua_type(L, -1) == LUA_TSTRING) {
+        size_t n;
+        const char *s = lua_tolstring(L, -1, &n);
+        out = QString::fromUtf8(s, qsizetype(qMin<size_t>(n, size_t(maxBytes))));
+        total += qint64(qMin<size_t>(n, size_t(maxBytes)));
+    } else if (!lua_isnil(L, -1) || required) {
+        err = QStringLiteral("field '%1' must be a string").arg(QLatin1String(k));
+        ok = false;
+    }
+    lua_pop(L, 1);
+    return ok;
+}
+bool blkClick(lua_State *L, int t, BlockCtx &c, bool required, int &token, QString &err) {
+    getRaw(L, t, "on_click");
+    bool ok = true;
+    if (lua_isfunction(L, -1)) {
+        if (c.refs.size() >= kMaxBlocks) { err = QStringLiteral("too many click handlers"); ok = false; }
+        else {
+            lua_pushvalue(L, -1);
+            const int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+            token = ++c.p->clickSeq;
+            c.refs << ref;
+            c.tokens[token] = ref;
+        }
+    } else if (!lua_isnil(L, -1) || required) { err = QStringLiteral("field 'on_click' must be a function"); ok = false; }
+    lua_pop(L, 1);
+    return ok;
+}
+bool parseBlock(lua_State *L, int idx, int depth, BlockCtx &c, PanelBlock &b, QString &err) {
+    idx = lua_absindex(L, idx);
+    if (!lua_istable(L, idx)) { err = QStringLiteral("a block must be a table"); return false; }
+    if (++c.count > kMaxBlocks) { err = QStringLiteral("too many blocks (max %1)").arg(kMaxBlocks); return false; }
+    if (!lua_checkstack(L, 8)) { err = QStringLiteral("blocks are too complex"); return false; }
+    QString type;
+    qint64 &tb = c.textBytes;
+    if (!blkStr(L, idx, "type", 16, true, type, tb, err)) return false;
+    b.type = type;
+    if (type == QLatin1String("heading")) {
+        if (!blkStr(L, idx, "text", 200, true, b.text, tb, err)) return false;
+        getRaw(L, idx, "level");
+        if (!lua_isnil(L, -1)) {
+            int isint = 0;
+            const lua_Integer v = lua_tointegerx(L, -1, &isint);
+            if (lua_type(L, -1) != LUA_TNUMBER || !isint || v < 1 || v > 3) { lua_pop(L, 1); err = QStringLiteral("heading 'level' must be 1, 2 or 3"); return false; }
+            b.level = int(v);
+        }
+        lua_pop(L, 1);
+    } else if (type == QLatin1String("text") || type == QLatin1String("markdown")) {
+        if (!blkStr(L, idx, "text", 16 * 1024, true, b.text, tb, err)) return false;
+    } else if (type == QLatin1String("empty")) {
+        if (!blkStr(L, idx, "text", 400, false, b.text, tb, err)) return false;
+    } else if (type == QLatin1String("button")) {
+        if (!blkStr(L, idx, "label", 200, true, b.text, tb, err) || !blkClick(L, idx, c, true, b.click, err)) return false;
+    } else if (type == QLatin1String("item")) {
+        if (!blkStr(L, idx, "title", 200, true, b.title, tb, err) || !blkStr(L, idx, "subtitle", 400, false, b.subtitle, tb, err) || !blkStr(L, idx, "path", 512, false, b.path, tb, err)) return false;
+        if (!b.path.isEmpty() && !validNotePath(b.path)) { err = QStringLiteral("item 'path' is not a valid note path"); return false; }
+        getRaw(L, idx, "line");
+        if (!lua_isnil(L, -1)) {
+            int isint = 0;
+            const lua_Integer v = lua_tointegerx(L, -1, &isint);
+            if (lua_type(L, -1) != LUA_TNUMBER || !isint || v < 1 || v > 10'000'000) { lua_pop(L, 1); err = QStringLiteral("item 'line' must be an integer between 1 and 10000000"); return false; }
+            b.line = int(v);
+        }
+        lua_pop(L, 1);
+        if (!blkClick(L, idx, c, false, b.click, err)) return false;
+    } else if (type == QLatin1String("list")) {
+        if (depth > 0) { err = QStringLiteral("a list cannot contain a list"); return false; }
+        getRaw(L, idx, "items");
+        if (!lua_istable(L, -1)) { lua_pop(L, 1); err = QStringLiteral("list 'items' must be an array of item blocks"); return false; }
+        const lua_Unsigned n = lua_rawlen(L, -1);
+        if (n > lua_Unsigned(kMaxBlocks)) { lua_pop(L, 1); err = QStringLiteral("too many blocks (max %1)").arg(kMaxBlocks); return false; }
+        for (lua_Unsigned i = 1; i <= n; ++i) {
+            lua_rawgeti(L, -1, lua_Integer(i));
+            PanelBlock it;
+            const bool ok = parseBlock(L, -1, depth + 1, c, it, err);
+            lua_pop(L, 1);
+            if (!ok) { lua_pop(L, 1); return false; }
+            if (it.type != QLatin1String("item")) { lua_pop(L, 1); err = QStringLiteral("a list may only contain item blocks"); return false; }
+            b.items << it;
+        }
+        lua_pop(L, 1);
+    } else {
+        err = QStringLiteral("unknown block type '%1'").arg(type.left(24));
+        return false;
+    }
+    if (tb > kMaxPanelBytes) { err = QStringLiteral("panel text is larger than %1 KiB").arg(kMaxPanelBytes / 1024); return false; }
+    return true;
+}
+// Converts the table on top of the stack into blocks. Raises (after all C++ objects are gone) when the result is rejected.
+void convertBlocks(lua_State *L, PluginState *p, const QString &panelId, QList<PanelBlock> *out) {
+    char msg[300];
+    msg[0] = 0;
+    {
+        BlockCtx c{p, {}, {}, 0, 0};
+        QList<PanelBlock> blocks;
+        QString err;
+        bool ok = true;
+        if (!lua_istable(L, -1)) { err = QStringLiteral("render must return an array of blocks"); ok = false; }
+        else {
+            const lua_Unsigned n = lua_rawlen(L, -1);
+            if (n > lua_Unsigned(kMaxBlocks)) { err = QStringLiteral("too many blocks (max %1)").arg(kMaxBlocks); ok = false; }
+            for (lua_Unsigned i = 1; ok && i <= n; ++i) {
+                lua_rawgeti(L, -1, lua_Integer(i));
+                PanelBlock b;
+                ok = parseBlock(L, -1, 0, c, b, err);
+                lua_pop(L, 1);
+                if (ok) blocks << b;
+                else err = QStringLiteral("block #%1: %2").arg(i).arg(err);
+            }
+        }
+        if (ok) {
+            // swap in the new click table; the previous render's callbacks are released
+            auto &old = p->clicks[panelId];
+            for (int ref : std::as_const(old)) luaL_unref(L, LUA_REGISTRYINDEX, ref);
+            old = c.tokens;
+            *out = blocks;
+        } else {
+            for (int ref : std::as_const(c.refs)) luaL_unref(L, LUA_REGISTRYINDEX, ref);
+            qstrncpy(msg, ("invalid panel: " + err).toUtf8().constData(), sizeof msg);
+        }
+    }
+    if (msg[0]) luaL_error(L, "%s", msg);
+}
+
+// Context table for render/items: no note data unless the plugin may read the note.
+void pushCtx(lua_State *L, PluginState *p, const char *k1, const QString &v1, NoteBridge *note) {
+    lua_createtable(L, 0, 4);
+    pushQRaw(L, v1); lua_setfield(L, -2, k1);
+    if (note && p->perms.contains(QStringLiteral("note.read"))) {
+        pushQRaw(L, capUtf8(note->path(), 4096)); lua_setfield(L, -2, "path");
+        pushQRaw(L, capUtf8(note->title(), 4096)); lua_setfield(L, -2, "title");
+    }
+}
+bool fitsStr(lua_State *L, std::initializer_list<const QString *> v) {
+    size_t c = 1024;
+    for (auto *s : v) c += size_t(s->size()) * 3 + 64;
+    return hostFits(L, c);
+}
+
+}  // namespace
+
+bool LuaPluginHost::renderPanel(const QString &id, const QString &panelId, NoteBridge *note, QList<PanelBlock> *out, QString *err) {
+    auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+    if (!ensureLoaded(id, err)) return false;
+    auto it = d->plugins.find(id);
+    if (it == d->plugins.end() || !(*it)->cb.contains("panel:" + panelId)) return fail(QStringLiteral("unknown panel '%1'").arg(panelId));
+    PluginState *p = *it;
+    const int ref = p->cb.value("panel:" + panelId);
+    p->renderingPanel = panelId;
+    QList<PanelBlock> blocks;
+    const auto r = callLua(this, d.get(), id, Budget::Render, note, [&](lua_State *L) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (!fitsStr(L, {&panelId})) return -1;
+        pushCtx(L, p, "panel", panelId, note);
+        return 1;
+    }, [&](lua_State *L) { convertBlocks(L, p, panelId, &blocks); });
+    if (auto it2 = d->plugins.find(id); it2 != d->plugins.end()) (*it2)->renderingPanel.clear();
+    if (!r.ok) return fail(r.err);
+    if (out) *out = blocks;
+    return true;
+}
+
+bool LuaPluginHost::panelClick(const QString &id, const QString &panelId, int token, NoteBridge *note, QString *err) {
+    auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+    auto it = d->plugins.find(id);
+    if (it == d->plugins.end() || !(*it)->L || (*it)->disabled) return fail(QStringLiteral("stale click: the panel has no live state"));
+    const auto pc = (*it)->clicks.constFind(panelId);
+    if (pc == (*it)->clicks.constEnd() || !pc->contains(token)) return fail(QStringLiteral("stale click: the panel was re-rendered"));
+    const int ref = pc->value(token);
+    const auto r = callLua(this, d.get(), id, Budget::Command, note, [ref](lua_State *L) { lua_rawgeti(L, LUA_REGISTRYINDEX, ref); return 0; }, nullptr);
+    if (!r.ok) return fail(r.err);
+    return true;
+}
+
+void LuaPluginHost::deliverPanelEvent(const QString &id, const QString &panelId, const QString &event, const QString &arg, NoteBridge *note) {
+    auto it = d->plugins.find(id);
+    if (it == d->plugins.end() || (*it)->disabled) return;
+    if (!ensureLoaded(id)) return;
+    it = d->plugins.find(id);
+    if (it == d->plugins.end() || !(*it)->cb.contains("pev:" + panelId)) return;
+    const int ref = (*it)->cb.value("pev:" + panelId);
+    callLua(this, d.get(), id, Budget::Event, note, [&](lua_State *L) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (!pushQ(L, event) || !pushQ(L, arg)) return -1;
+        return 2;
+    }, nullptr);
+}
+
+QList<CompletionItem> LuaPluginHost::complete(const QString &id, const QString &completeId, const QString &query, NoteBridge *note, int *dropped, QString *err) {
+    QList<CompletionItem> items;
+    int drop = 0;
+    if (dropped) *dropped = 0;
+    if (!ensureLoaded(id, err)) return items;
+    auto it = d->plugins.find(id);
+    if (it == d->plugins.end() || !(*it)->cb.contains("cmp:" + completeId)) { if (err) *err = QStringLiteral("unknown completion '%1'").arg(completeId); return items; }
+    PluginState *p = *it;
+    const int ref = p->cb.value("cmp:" + completeId);
+    QString trigger;
+    for (const auto &c : p->regs.completions) if (c.id == completeId) trigger = c.trigger;
+    const QString q = capUtf8(query, 256);
+    const auto r = callLua(this, d.get(), id, Budget::Complete, note, [&](lua_State *L) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+        if (!fitsStr(L, {&q, &trigger})) return -1;
+        pushQRaw(L, q);
+        pushCtx(L, p, "trigger", trigger, note);
+        return 2;
+    }, [&](lua_State *L) {
+        if (!lua_istable(L, -1)) { drop = 1; return; }
+        const lua_Unsigned n = lua_rawlen(L, -1);
+        for (lua_Unsigned i = 1; i <= n && i <= 200; ++i) {
+            if (items.size() >= kMaxCompleteItems) { drop += int(n - i + 1); break; }
+            lua_rawgeti(L, -1, lua_Integer(i));
+            bool ok = lua_istable(L, -1);
+            CompletionItem ci;
+            ci.pluginId = id;
+            auto str = [&](const char *k, int maxChars, bool required, QString &dst) {
+                if (!ok) return;
+                getRaw(L, -1, k);
+                if (lua_type(L, -1) == LUA_TSTRING) {
+                    size_t len;
+                    const char *s = lua_tolstring(L, -1, &len);
+                    if (len > size_t(maxChars) * 4) ok = false;
+                    else { dst = QString::fromUtf8(s, qsizetype(len)); if (dst.size() > maxChars || (required && dst.isEmpty())) ok = false; }
+                } else if (required || !lua_isnil(L, -1)) ok = false;
+                lua_pop(L, 1);
+            };
+            str("label", 200, true, ci.label);
+            str("insert", 8192, true, ci.insert);
+            str("detail", 200, false, ci.detail);
+            if (ok) {
+                getRaw(L, -1, "cursor_offset");
+                if (!lua_isnil(L, -1)) {
+                    int isint = 0;
+                    const lua_Integer v = lua_tointegerx(L, -1, &isint);
+                    if (lua_type(L, -1) != LUA_TNUMBER || !isint || v < 0 || v > ci.insert.size()) ok = false;
+                    else ci.cursorOffset = int(v);
+                }
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+            if (ok) items << ci; else ++drop;
+        }
+        if (n > 200 && items.size() < kMaxCompleteItems) drop += int(n - 200);
+    });
+    if (dropped) *dropped = drop;
+    if (!r.ok) { if (err) *err = r.err; return {}; }
+    if (drop > 0 && d->env.logger) d->env.logger(2, id, QStringLiteral("completion '%1': %2 invalid or surplus items dropped").arg(completeId).arg(drop));
+    return items;
+}
+
+bool LuaPluginHost::activateLink(const QString &id, const LinkActivation &ref, NoteBridge *note) {
+    auto it = d->plugins.find(id);
+    if (it == d->plugins.end() || (*it)->disabled || !(*it)->regs.events.contains(QStringLiteral("link.activate"))) return false;
+    if (!ensureLoaded(id)) return false;
+    auto pushRef = [&](lua_State *L) -> bool {
+        const QString kind = capUtf8(ref.kind, 16), target = capUtf8(ref.target, 1024), alias = capUtf8(ref.alias, 512), anchor = capUtf8(ref.anchor, 512), resolved = capUtf8(ref.resolved, 1024);
+        if (!fitsStr(L, {&kind, &target, &alias, &anchor, &resolved})) return false;
+        lua_createtable(L, 0, 5);
+        auto put = [&](const char *k, const QString &v, bool always) { if (!always && v.isEmpty()) return; pushQRaw(L, v); lua_setfield(L, -2, k); };
+        put("kind", kind.isEmpty() ? QStringLiteral("link") : kind, true);
+        put("target", target, true);
+        put("alias", alias, false);
+        put("anchor", anchor, false);
+        put("resolved", resolved, false);
+        return true;
+    };
+    it = d->plugins.find(id);
+    if (const auto pat = (*it)->cb.constFind(QStringLiteral("linkpat")); pat != (*it)->cb.constEnd()) {
+        const int pref = *pat;
+        bool pass = false;
+        const auto r = callLua(this, d.get(), id, Budget::Event, note, [&](lua_State *L) { lua_rawgeti(L, LUA_REGISTRYINDEX, pref); return pushRef(L) ? 1 : -1; },
+                               [&](lua_State *L) { pass = lua_toboolean(L, -1); });
+        if (!r.ok || !pass || r.disabled) return false;
+    }
+    it = d->plugins.find(id);
+    if (it == d->plugins.end()) return false;
+    const QList<int> refs = (*it)->ev.value(QStringLiteral("link.activate"));
+    for (int fref : refs) {
+        bool handled = false;
+        const auto r = callLua(this, d.get(), id, Budget::Event, note, [&](lua_State *L) { lua_rawgeti(L, LUA_REGISTRYINDEX, fref); return pushRef(L) ? 1 : -1; },
+                               [&](lua_State *L) { handled = lua_toboolean(L, -1); });
+        if (r.ok && handled) return true;
+        if (r.disabled || !isLoaded(id)) break;
+    }
+    return false;
 }
 
 bool LuaPluginHost::setSetting(const QString &id, const QString &settingId, const QVariant &v) {
