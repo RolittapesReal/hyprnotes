@@ -13,6 +13,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWindow>
+#include <QScreen>
 
 using namespace hn::platform;
 
@@ -64,6 +65,7 @@ StickyWindow::StickyWindow(AppController *c, NoteSession *s)
     m_chip = new ui::ChipButton(m_header);
     m_format = new ui::IconButton("h1", tr("Formatting toolbar"), m_header, kHeader);
     m_format->setCheckable(true);
+    m_format->installEventFilter(this);
     m_popIn = new ui::IconButton("popin", tr("Pop in to organizer"), m_header, kHeader);
     m_close = new ui::IconButton("close", tr("Close note"), m_header, kHeader);
     h->addWidget(m_header->title, 1);
@@ -133,10 +135,14 @@ PanelDock *StickyWindow::openPanels() {
     if (m_popup) return m_popup;
     auto *d = new PanelDock(m_c, this, true);
     d->setAttribute(Qt::WA_DeleteOnClose);
-    d->setFixedSize(qBound(int(PanelDock::kMinW), width() - 2 * kEdge, 360), qMax(200, height() - kHeader - 2 * kEdge));
+    const QRect bounds = screen()->availableGeometry();
+    d->setFixedSize(qMin(bounds.width(), qBound(int(PanelDock::kMinW), width() - 2 * kEdge, 360)),
+                    qMin(bounds.height(), qMax(200, height() - kHeader - 2 * kEdge)));
     d->setSession(m_session.data());
     connect(d, &PanelDock::closeRequested, d, &QWidget::close);
-    d->move(mapToGlobal(QPoint(width() - kEdge - d->width(), kEdge + kHeader)));
+    const QPoint desired = mapToGlobal(QPoint(width() - kEdge - d->width(), kEdge + kHeader));
+    d->move(qBound(bounds.left(), desired.x(), bounds.right() - d->width() + 1),
+            qBound(bounds.top(), desired.y(), bounds.bottom() - d->height() + 1));
     d->show();
     d->view()->setFocus();
     m_popup = d;
@@ -183,6 +189,18 @@ void StickyWindow::setToolbarShown(bool on) {
     m_toolbarHost->setVisible(on);
     if (on) m_fade->play();
     if (auto *ed = m_session->editor(); ed) ed->focusEditor();
+}
+
+bool StickyWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_format && event->type() == QEvent::KeyPress) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Space || key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+            setToolbarShown(true);
+            m_session->toolbar()->focusFirstControl();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void StickyWindow::setWorkspaceMode(WorkspaceMode m) {

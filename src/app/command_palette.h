@@ -32,12 +32,14 @@ private:
     CommandPalette(QWidget *host, const QList<Item> &items, std::function<void(const QString &)> run);
     void refilter();
     void place();
+    void restyle();
     QList<Item> m_all, m_shown;
     QLineEdit *m_input;
     std::function<void(const QString &)> m_run;
     QWidget *m_host;
     QWidget *m_prevFocus = nullptr;
     int m_sel = 0, m_top = 0;
+    int m_inputH = kInput, m_rowH = kRow, m_visibleRows = kMaxRows;
 };
 
 } // namespace hn::app

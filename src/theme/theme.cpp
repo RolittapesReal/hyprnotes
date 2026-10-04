@@ -15,6 +15,7 @@
 #include <QStyleFactory>
 #include <QTemporaryDir>
 #include "config.h"
+#include "builtin_themes.h"
 #include <hn/theme/theme_io.h>
 
 namespace hn::theme {
@@ -46,6 +47,7 @@ Theme modernist(bool dark) {
         for (int i = 0; i < 6; ++i) t.noteAccent[i] = c(n[i]);
     }
     t.padding = 16;   // 8px grid; header text in the organizer aligns with the editor text edge
+    t.radius = 4;
     t.fontFamily = pickFamily({"Inter", "Noto Sans"}, "sans-serif");
     t.monoFamily = pickFamily({"JetBrains Mono"}, "monospace");
     return t;
@@ -97,16 +99,19 @@ bool applyTokens(const QJsonObject &o, Theme &t, QString &err) {
     return true;
 }
 
-// Checked-box tick for QSS url(); written once per colour into a process-lifetime temp dir.
-QString tickPath(const QColor &c) {
+// QSS glyphs are cached by shape and colour outside the user's configuration.
+QString glyphPath(const QString &shape, const QColor &c) {
+    static const QHash<QString, QString> paths{{"tick", "M3.5 8.5l3 3 6-7"},
+        {"chevron-down", "M4 6l4 4 4-4"}, {"chevron-up", "M4 10l4-4 4 4"}};
+    if (!paths.contains(shape)) return {};
     static QTemporaryDir dir;
     if (!dir.isValid()) return {};
-    const QString p = dir.filePath("tick-" + c.name().mid(1) + ".svg");
+    const QString p = dir.filePath(shape + '-' + c.name().mid(1) + ".svg");
     if (!QFile::exists(p)) {
         QFile f(p);
         if (!f.open(QIODevice::WriteOnly)) return {};
-        f.write(QString("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'><path d='M3.5 8.5l3 3 6-7' "
-                        "fill='none' stroke='%1' stroke-width='2' stroke-linecap='square'/></svg>").arg(c.name()).toUtf8());
+        f.write(QString("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' width='16' height='16'><path d='%1' "
+                        "fill='none' stroke='%2' stroke-width='2' stroke-linecap='square'/></svg>").arg(paths[shape], c.name()).toUtf8());
     }
     return p;
 }
@@ -158,17 +163,26 @@ QJsonObject builtinThemeObject() {
 
 QString lastThemeError() { return g_error; }
 
+int popupRadius(const Theme &t) { return t.radius == 0 ? 0 : qMin(32, t.radius + 2); }
+
 Theme loadTheme(const QString &name, bool dark) {
     g_error.clear();
     const Theme base = modernist(dark);
-    if (name.isEmpty() || name == "modernist") return base;
-    if (name.contains('/') || name.contains("..")) { g_error = "invalid theme name"; return base; }
-    QFile f(configHome() + "/hyprnotes/themes/" + name + ".json");
-    if (!f.open(QIODevice::ReadOnly)) { g_error = QString("theme \"%1\" not found").arg(name); return base; }
-    QJsonParseError pe;
-    const QJsonDocument d = QJsonDocument::fromJson(f.readAll(), &pe);
-    if (!d.isObject()) { g_error = "malformed JSON: " + pe.errorString(); return base; }
-    const QJsonObject o = d.object();
+    if (name.isEmpty()) return base;
+    QJsonObject o;
+    if (isBuiltinTheme(name)) {
+        const QString canonical = name.toLower();
+        if (canonical == "modernist") return base;
+        o = detail::presetThemeObject(canonical);
+    } else {
+        if (name.contains('/') || name.contains("..")) { g_error = "invalid theme name"; return base; }
+        QFile f(themesDir() + '/' + name + ".json");
+        if (!f.open(QIODevice::ReadOnly)) { g_error = QString("theme \"%1\" not found").arg(name); return base; }
+        QJsonParseError pe;
+        const QJsonDocument d = QJsonDocument::fromJson(f.readAll(), &pe);
+        if (!d.isObject()) { g_error = "malformed JSON: " + pe.errorString(); return base; }
+        o = d.object();
+    }
     if (o["version"].toInt(-1) != 1) { g_error = "unsupported or missing \"version\" (expected 1)"; return base; }
     if (o.contains("base") && o["base"].toString() != "modernist") { g_error = "unknown base theme"; return base; }
     Theme t = base;
@@ -192,12 +206,16 @@ QFont labelFont(const Theme &t) {
 
 QString styleSheetFor(const Theme &t) {
     const QString q = QString(R"(
-* { font-family: "@font@", "Noto Sans", sans-serif; }
 QWidget { background: @bg@; color: @text@; selection-background-color: @accent@; selection-color: @accentText@; }
 QDialog, QMainWindow, QStatusBar { background: @bg@; }
 QStatusBar { border-top: @bw@px solid @border@; color: @muted@; }
 QStatusBar::item { border: none; }
 QLabel { background: transparent; }
+QLabel[hnRole="hint"] { color: @muted@; font-size: @hintSize@px; }
+QLabel[hnRole="section"] { color: @muted@; font-size: @sectionSize@px; font-weight: bold; }
+QLabel[hnRole="heading"] { color: @text@; font-size: @headingSize@px; font-weight: bold; }
+QLabel[hnRole="danger"] { color: @danger@; font-weight: bold; }
+QLabel[hnRole="accent"] { color: @accent@; }
 QToolTip { background: @text@; color: @bg@; border: @bw@px solid @text@; padding: 4px 8px; }
 QPushButton, QToolButton { background: @surface@; color: @text@; border: @bw@px solid @border@; border-radius: @r@px;
   padding: 3px 15px; min-height: 24px; font-weight: 600; }
@@ -209,18 +227,36 @@ QToolButton:focus { padding: 2px 6px; }
 QPushButton:default { border-color: @accent@; }
 QPushButton:disabled, QToolButton:disabled { color: @muted@; background: transparent; border-color: @border@; }
 QToolButton:checked { border-bottom: 2px solid @accent@; }
-QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QComboBox { background: @surface@; color: @text@; border: @bw@px solid @border@;
+QPushButton[hnRole="primary"] { background: @accent@; color: @accentText@; border-color: @accent@; }
+QPushButton[hnRole="primary"]:hover { background: @text@; color: @bg@; border-color: @text@; }
+QPushButton[hnRole="primary"]:pressed { background: @accent@; color: @accentText@; }
+QPushButton[hnRole="primary"]:focus { border-color: @text@; }
+QPushButton[hnRole="primary"]:disabled { background: @surface@; color: @muted@; border-color: @border@; }
+QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox { background: @surface@; color: @text@; border: @bw@px solid @border@;
   border-radius: @r@px; padding: 3px 7px; min-height: 24px; }
-QTextEdit, QPlainTextEdit { padding: @pad@px; }
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { border: 2px solid @accent@; padding: 2px 6px; }
+QTextEdit, QPlainTextEdit { padding: @pad@px; border-radius: 0; }
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QAbstractSpinBox:focus, QComboBox:focus { border: 2px solid @accent@; padding: 2px 6px; }
 QTextEdit:focus, QPlainTextEdit:focus { padding: @padm@px; }
-QComboBox::drop-down { border: none; width: 24px; }
+QComboBox, QAbstractSpinBox { padding-right: 31px; }
+QComboBox:focus, QAbstractSpinBox:focus { padding-right: 30px; }
+QComboBox { combobox-popup: 0; }
+QComboBox::drop-down { subcontrol-origin: border; subcontrol-position: center right; margin-right: 1px; border: none; width: 24px; }
+QComboBox::down-arrow { image: url(@down@); width: 12px; height: 12px; }
+QComboBox::down-arrow:disabled { image: url(@downDisabled@); }
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { subcontrol-origin: border; width: 24px; border: none; margin: 1px; }
+QAbstractSpinBox::up-button { subcontrol-position: top right; }
+QAbstractSpinBox::down-button { subcontrol-position: bottom right; }
+QAbstractSpinBox::up-arrow { image: url(@up@); width: 12px; height: 12px; }
+QAbstractSpinBox::down-arrow { image: url(@down@); width: 12px; height: 12px; }
+QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off { image: url(@upDisabled@); }
+QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off { image: url(@downDisabled@); }
 QComboBox QAbstractItemView { background: @surface@; border: @bw@px solid @border@; selection-background-color: @selection@; selection-color: @text@; outline: 0; }
-QMenu { background: @surface@; color: @text@; border: @bw@px solid @border@; padding: 4px 0; }
-QMenu::item { padding: 4px 24px; border-left: 3px solid transparent; }
+QMenu, QToolTip, QComboBox QAbstractItemView { border-radius: @popupR@px; }
+QMenu { background: @surface@; color: @text@; border: @bw@px solid @border@; padding: 6px; }
+QMenu::item { padding: 6px 28px 6px 14px; margin: 1px 0; border-left: 3px solid transparent; }
 QMenu::item:selected { background: @selection@; border-left: 3px solid @accent@; }
 QMenu::item:disabled { color: @muted@; }
-QMenu::separator { height: @bw@px; background: @border@; margin: 4px 0; }
+QMenu::separator { height: @bw@px; background: @border@; margin: 5px 4px; }
 QMenuBar { background: @bg@; } QMenuBar::item:selected { background: @selection@; }
 QListView, QTreeView, QTableView { background: @bg@; border: @bw@px solid @border@; outline: 0; alternate-background-color: @surface@; }
 QListView::item, QTreeView::item { padding: 4px 8px; border-left: 3px solid transparent; }
@@ -245,10 +281,15 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QSplitter::handle { background: @border@; }
 )");
     QString s = q;
-    const QHash<QString, QString> m{{"font", t.fontFamily}, {"bg", t.bg.name()}, {"surface", t.surface.name()}, {"text", t.text.name()},
+    const QHash<QString, QString> m{{"bg", t.bg.name()}, {"surface", t.surface.name()}, {"text", t.text.name()},
         {"muted", t.muted.name()}, {"accent", t.accent.name()}, {"accentText", t.accentText.name()}, {"border", t.border.name()},
         {"selection", t.selection.name()}, {"bw", QString::number(t.borderWidth)}, {"r", QString::number(t.radius)},
-        {"pad", QString::number(t.padding)}, {"padm", QString::number(qMax(0, t.padding - 1))}, {"tick", tickPath(t.accentText)}};
+        {"popupR", QString::number(popupRadius(t))}, {"danger", t.danger.name()},
+        {"hintSize", QString::number(qMax(11, t.baseSize - 1))}, {"sectionSize", QString::number(qMax(10, t.baseSize - 3))},
+        {"headingSize", QString::number(t.baseSize + 6)},
+        {"pad", QString::number(t.padding)}, {"padm", QString::number(qMax(0, t.padding - 1))}, {"tick", glyphPath("tick", t.accentText)},
+        {"down", glyphPath("chevron-down", t.text)}, {"up", glyphPath("chevron-up", t.text)},
+        {"downDisabled", glyphPath("chevron-down", t.muted)}, {"upDisabled", glyphPath("chevron-up", t.muted)}};
     // longest keys first so "accentText" is not clobbered by "accent"
     QStringList keys = m.keys();
     std::sort(keys.begin(), keys.end(), [](const QString &a, const QString &b) { return a.size() > b.size(); });
@@ -262,6 +303,7 @@ namespace {
 // is instead set per top-level window: visible windows in time-boxed slices (the first slice runs synchronously),
 // hidden ones when they are next shown (event filter), so the GUI thread is never blocked for long.
 QString g_sheet;
+QFont g_font;   // the theme font; a platform theme (qt6ct) re-applies its own app font after startup, so it is re-asserted
 quint64 g_gen = 0;
 constexpr int kSliceMs = 25;
 const char *kGenProp = "hnSheetGen";
@@ -286,6 +328,10 @@ void sheetSlice(quint64 gen) {
 
 struct ShowFilter : QObject {
     bool eventFilter(QObject *o, QEvent *e) override {
+        if (e->type() == QEvent::ApplicationFontChange && o == qApp && !g_font.family().isEmpty() && qApp->font() != g_font) {
+            static bool busy = false;   // setFont() re-sends this event
+            if (!busy) { busy = true; qApp->setFont(g_font); busy = false; }
+        }
         if (e->type() == QEvent::Show && o->isWidgetType()) { auto *w = static_cast<QWidget *>(o); if (w->isWindow()) applySheetTo(w); }
         return false;
     }
@@ -316,6 +362,7 @@ void applyTheme(const Theme &t) {
     qApp->setPalette(p);
     QFont f(t.fontFamily);
     f.setPixelSize(t.baseSize);
+    g_font = f;
     qApp->setFont(f);
     QFont tab = labelFont(t);
     qApp->setFont(tab, "QTabBar");

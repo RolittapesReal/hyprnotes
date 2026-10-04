@@ -528,6 +528,16 @@ bool NoteEditor::completionActive() const { return m_l && m_l->active; }
 QWidget *NoteEditor::completionPopup() const { return m_l ? m_l->popup : nullptr; }
 QRect NoteEditor::placeCompletionPopup(const QRect &c, const QSize &s, const QRect &a) { return CompletionPopup::place(c, s, a); }
 
+void NoteEditor::restyleCompletionPopup()
+{
+    if (!m_l || !m_l->active || !m_l->popup || !m_l->popup->isVisible()) return;
+    const bool vis = m_mode == Mode::Visual;
+    m_l->popup->setTheme(effective(m_theme, palette()), activeEdit()->font());
+    const QRect cr = vis ? m_vis->cursorRect() : m_src->cursorRect();
+    QWidget *vp = vis ? m_vis->viewport() : m_src->viewport();
+    m_l->popup->showAt(QRect(vp->mapToGlobal(cr.topLeft()), cr.size()));
+}
+
 void NoteEditor::showCompletions(const QList<CompletionItem> &items, int generation)
 {
     if (!m_l || !m_l->active) return;

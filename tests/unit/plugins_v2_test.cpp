@@ -3,6 +3,7 @@
 #include "plugins_test_util.h"
 #include <QElapsedTimer>
 #include <QJsonDocument>
+#include <QEventLoop>
 
 using namespace hn::plugins;
 using namespace hn::plugins::test;
@@ -18,12 +19,339 @@ static QJsonValue jlog(Rig &r, const QString &id) {  // the last hn.log line par
 }
 static QString auditText(Rig &r) { return QString::fromUtf8(readFile(r.env.state() + "/plugins-audit.jsonl")); }
 
+// The real open bridge drives nested manager calls, as AppController does.
+struct LifecycleIndexLib : FakeIndexLib {
+    std::function<void()> onOpen;
+    BridgeStatus open(const QString &path, const QString &where) override {
+        const auto result = FakeIndexLib::open(path, where);
+        if (onOpen) onOpen();
+        return result;
+    }
+};
+
+static void hostRefresh(PluginManager &manager, NoteBridge *note) {
+    manager.requestPanelRefresh("life", "p", note);
+}
+static QByteArray lifecyclePanel() {
+    return R"LUA(
+hn.panel{id='p',title='P',refresh_on={'note.opened'},
+  on_event=function(event,arg) hn.log(event..':'..arg) end,
+  render=function(ctx)
+    return {{type='item',title=ctx.path or 'none',
+      on_click=function() hn.notes.open('notes/a.md') end}}
+  end}
+)LUA";
+}
+
 class V2Test : public QObject {
     Q_OBJECT
     static bool add(Rig &r, const QString &id, const QStringList &perms, const QByteArray &lua, QString *err = nullptr) { return r.addLua(id, perms, lua, {}, err, 2); }
     static bool runT(Rig &r, const QString &id, QString *err = nullptr) { return r.mgr->runCommand(id + ":t", &r.note, err); }
 
 private slots:
+    void replacementPathsCannotMutateAnActiveCallback_data() {
+        QTest::addColumn<QString>("action");
+        for (const auto *name : {"scan", "scan-after-remove", "upgrade"}) QTest::newRow(name) << QString(name);
+    }
+    void replacementPathsCannotMutateAnActiveCallback() {
+        QFETCH(QString, action);
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, lifecyclePanel(), &error));
+        rig.mgr->setPanelActive("life", "p", true);
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
+        bool held = false, busy = false, upgradeRefused = false;
+        lib.onOpen = [&] {
+            hostRefresh(*rig.mgr, &rig.note);
+            if (action == "scan-after-remove") rig.mgr->remove("life");
+            if (action.startsWith("scan")) rig.mgr->scan();
+            else {
+                const auto result = rig.mgr->install(rig.env.src() + "/life", true);
+                upgradeRefused = !result.ok && !result.errors.isEmpty() && result.errors.front().message.contains("busy");
+            }
+            held = rig.mgr->host()->usesNote(&rig.note);
+            busy = rig.mgr->host()->isBusy("life");
+        };
+        QVERIFY2(rig.mgr->panelClick("life", "p", blocks.front().click, &rig.note, &error), qPrintable(error));
+        QVERIFY(held);
+        QVERIFY(busy);
+        if (action == "upgrade") QVERIFY(upgradeRefused);
+        if (action != "scan-after-remove") {
+            QCOMPARE(rig.mgr->info("life").status, Status::Enabled);
+            QVERIFY(rig.mgr->disable("life"));
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(rig.panel.updates, 0);
+        QCOMPARE(rig.mgr->loadedStates(), 0);
+        QVERIFY(!rig.mgr->panelClick("life", "p", blocks.front().click, &rig.note, &error));
+        QCOMPARE(lib.opened.size(), 1);
+    }
+
+    void reentrantOrdinarySubscriberPreservesPanelEventOrder() {
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, R"LUA(
+hn.on('note.opened',function(arg) if arg=='A' then hn.notes.open('nested.md') end end)
+hn.panel{id='p',title='P',refresh_on={'note.opened'},
+ on_event=function(event,arg) hn.log('panel:'..arg) end,
+ render=function() return {} end}
+)LUA", &error));
+        rig.mgr->setPanelActive("life", "p", true);
+        lib.onOpen = [&] { rig.mgr->post("note.opened", "B", &rig.note); };
+        rig.mgr->post("note.opened", "A", &rig.note);
+        QCoreApplication::processEvents();
+        QCOMPARE(rig.logsOf("life"), (QStringList{"panel:A", "panel:B"}));
+        QVERIFY(rig.panel.errors["life:p"].isEmpty());
+    }
+
+    void hostRefreshWaitsForBusyCallbackAndPreservesEventOrder() {
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY2(add(rig, "life", {"ui.panel", "notes.read", "note.read"}, lifecyclePanel(), &error), qPrintable(error));
+        QVERIFY(add(rig, "other", {}, cmd("")));
+        rig.mgr->setPanelActive("life", "p", true);
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
+        const int token = blocks.front().click;
+        FakeNote latest;
+        latest.p = "latest.md";
+        bool directRenderRefused = false, directClickRefused = false;
+        int duringUpdates = -1;
+        QStringList duringEvents;
+        lib.onOpen = [&] {
+            rig.mgr->post("note.opened", "first", &rig.note);
+            hostRefresh(*rig.mgr, &latest);
+            rig.mgr->post("note.opened", "second", &rig.note);
+            QList<PanelBlock> ignored;
+            QString busy;
+            directRenderRefused = !rig.mgr->renderPanel("life", "p", &rig.note, &ignored, &busy) && busy.contains("busy");
+            directClickRefused = !rig.mgr->panelClick("life", "p", token, &rig.note, &busy) && busy.contains("busy");
+            // Another plugin finishing schedules a drain while life is still busy.
+            rig.mgr->runCommand("other:t", &rig.note);
+            QEventLoop loop;
+            QTimer::singleShot(5, &loop, &QEventLoop::quit);
+            loop.exec();
+            duringUpdates = rig.panel.updates;
+            duringEvents = rig.logsOf("life");
+        };
+        QVERIFY2(rig.mgr->panelClick("life", "p", token, &rig.note, &error), qPrintable(error));
+        QVERIFY(directRenderRefused);
+        QVERIFY(directClickRefused);
+        QCOMPARE(duringUpdates, 0);
+        QVERIFY(duringEvents.isEmpty());
+        QTRY_COMPARE(rig.panel.updates, 1);
+        QVERIFY2(rig.panel.errors["life:p"].isEmpty(), qPrintable(rig.panel.errors["life:p"]));
+        QCOMPARE(rig.panel.blocks["life:p"].front().title, QString("latest.md"));
+        QCOMPARE(rig.logsOf("life"), (QStringList{"note.opened:first", "note.opened:second"}));
+        QCOMPARE(rig.mgr->info("life").status, Status::Enabled);
+    }
+
+    void nestedSharedNoteRemainsHeldAfterInnerCallbackAndRemoval() {
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, lifecyclePanel(), &error));
+        QVERIFY(add(rig, "inner", {"notes.read"}, cmd("hn.notes.open('notes/a.md')")));
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
+        int depth = 0;
+        bool innerSucceeded = false, heldAfterRemoval = false, heldAfterInner = false, releasedAfterOuter = false;
+        connect(rig.mgr->host(), &LuaPluginHost::callbackFinished, this, [&](const QString &id) {
+            if (id == "inner") heldAfterInner = rig.mgr->host()->usesNote(&rig.note);
+            if (id == "life") releasedAfterOuter = !rig.mgr->host()->usesNote(&rig.note);
+        });
+        lib.onOpen = [&] {
+            if (++depth == 1) innerSucceeded = rig.mgr->runCommand("inner:t", &rig.note, &error);
+            else {
+                rig.mgr->detachNote(&rig.note);
+                rig.mgr->remove("life");
+                heldAfterRemoval = rig.mgr->host()->usesNote(&rig.note);
+            }
+            --depth;
+        };
+        QVERIFY2(rig.mgr->panelClick("life", "p", blocks.front().click, &rig.note, &error), qPrintable(error));
+        QVERIFY(innerSucceeded);
+        QVERIFY(heldAfterRemoval);
+        QVERIFY(heldAfterInner);
+        QVERIFY(releasedAfterOuter);
+    }
+
+    void reloadDuringCallbackCannotReplaceItsLiveState() {
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, lifecyclePanel(), &error));
+        rig.mgr->setPanelActive("life", "p", true);
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
+        bool refused = false;
+        lib.onOpen = [&] {
+            hostRefresh(*rig.mgr, &rig.note);
+            QString reason;
+            refused = !rig.mgr->reload("life", false, &reason) && reason.contains("busy");
+        };
+        QVERIFY2(rig.mgr->panelClick("life", "p", blocks.front().click, &rig.note, &error), qPrintable(error));
+        QVERIFY(refused);
+        QVERIFY(rig.mgr->reload("life", false, &error));
+        QCoreApplication::processEvents();
+        QCOMPARE(rig.panel.updates, 0);
+        QCOMPARE(rig.mgr->loadedStates(), 0);
+    }
+
+    void refreshRequestedDuringDrainMakesProgress() {
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read", "note.read"}, R"LUA(
+local stage=0
+hn.panel{id='p',title='P',render=function(ctx)
+  if stage==1 then stage=2 hn.notes.open('during-render.md') end
+  return {{type='item',title=ctx.path,on_click=function()
+    stage=1 hn.notes.open('from-click.md')
+  end}}
+end}
+)LUA", &error));
+        rig.mgr->setPanelActive("life", "p", true);
+        FakeNote first, latest;
+        first.p = "first.md"; latest.p = "latest.md";
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
+        lib.onOpen = [&] { hostRefresh(*rig.mgr, lib.opened.size() == 1 ? &first : &latest); };
+        QVERIFY2(rig.mgr->panelClick("life", "p", blocks.front().click, &rig.note, &error), qPrintable(error));
+        QTRY_COMPARE(rig.panel.updates, 2);
+        QCOMPARE(rig.panel.blocks["life:p"].front().title, QString("latest.md"));
+        QVERIFY(rig.panel.errors["life:p"].isEmpty());
+    }
+
+    void reloadDoesNotReuseAnOldPublishedClickToken() {
+        Rig rig;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, lifecyclePanel(), &error));
+        QList<PanelBlock> before, after;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &before, &error));
+        const int oldToken = before.front().click;
+        QVERIFY(rig.mgr->reload("life", false, &error));
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &after, &error));
+        QVERIFY(!rig.mgr->panelClick("life", "p", oldToken, &rig.note, &error));
+        QVERIFY(rig.lib.opened.isEmpty());
+        QVERIFY(rig.mgr->panelClick("life", "p", after.front().click, &rig.note, &error));
+        QCOMPARE(rig.lib.opened.size(), 1);
+    }
+
+    void detachingDuringCoalescedDeliveryCancelsRemainingNoteEvents() {
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, R"LUA(
+hn.panel{id='p',title='P',refresh_on={'note.changed','selection.changed'},
+ on_event=function(event) hn.log(event) hn.notes.open('other.md') end,
+ render=function() return {} end}
+)LUA", &error));
+        rig.mgr->setPanelActive("life", "p", true);
+        lib.onOpen = [&] { rig.mgr->detachNote(&rig.note); };
+        rig.mgr->post("note.changed", "old", &rig.note);
+        rig.mgr->post("selection.changed", "old", &rig.note);
+        rig.mgr->flushEvents();
+        QCOMPARE(rig.logsOf("life"), QStringList{"note.changed"});
+        QCOMPARE(rig.panel.updates, 0);
+    }
+
+    void coalescedAndCloseSubscribersWaitForTheActiveCallback() {
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, lifecyclePanel() + R"LUA(
+hn.on('note.changed',function(arg) hn.log('changed:'..arg) end)
+hn.on('note.closed',function(arg) hn.log('closed:'..arg) end)
+)LUA", &error));
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
+        QStringList during;
+        lib.onOpen = [&] {
+            rig.mgr->post("note.changed", "A.md", &rig.note);
+            rig.mgr->post("note.closed", "A.md", &rig.note);
+            QCoreApplication::processEvents();
+            during = rig.logsOf("life");
+        };
+        QVERIFY(rig.mgr->panelClick("life", "p", blocks.front().click, &rig.note, &error));
+        QVERIFY(during.isEmpty());
+        QCoreApplication::processEvents();
+        QCOMPARE(rig.logsOf("life"), (QStringList{"changed:A.md", "closed:A.md"}));
+    }
+
+    void disabledPanelCannotExecuteOldToken() {
+        Rig rig;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read"}, lifecyclePanel(), &error));
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
+        const int token = blocks.front().click;
+        QVERIFY(token > 0);
+        rig.mgr->disable("life");
+        QVERIFY(!rig.mgr->panelClick("life", "p", token, &rig.note, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(rig.lib.opened.isEmpty());
+    }
+
+    void pendingPanelWorkIsCancelled_data() {
+        QTest::addColumn<QString>("action");
+        for (const auto *action : {"disable", "remove", "reload", "detach", "unload", "hidden", "disable-inside", "remove-inside"})
+            QTest::newRow(action) << QString(action);
+    }
+    void pendingPanelWorkIsCancelled() {
+        QFETCH(QString, action);
+        Rig rig;
+        LifecycleIndexLib lib;
+        rig.mgr->host()->env().bridges.library = &lib;
+        QString error;
+        QVERIFY(add(rig, "life", {"ui.panel", "notes.read", "note.read"}, lifecyclePanel(), &error));
+        rig.mgr->setPanelActive("life", "p", true);
+        auto note = std::make_unique<FakeNote>();
+        QList<PanelBlock> blocks;
+        QVERIFY(rig.mgr->renderPanel("life", "p", note.get(), &blocks, &error));
+        const int token = blocks.front().click;
+        lib.onOpen = [&] {
+            rig.mgr->post("note.opened", "old", note.get());
+            hostRefresh(*rig.mgr, note.get());
+            if (action == "disable-inside") rig.mgr->disable("life");
+            if (action == "remove-inside") rig.mgr->remove("life");
+        };
+        QVERIFY2(rig.mgr->panelClick("life", "p", token, note.get(), &error), qPrintable(error));
+        QCOMPARE(rig.panel.updates, 0);
+        if (action == "disable") QVERIFY(rig.mgr->disable("life"));
+        if (action == "remove") QVERIFY(rig.mgr->remove("life", &error));
+        if (action == "reload") {
+            QVERIFY(rig.mgr->reload("life", false, &error));
+            rig.mgr->setPanelActive("life", "p", true);
+            // Reload followed by an explicit render must not revive the old generation.
+            QVERIFY(rig.mgr->renderPanel("life", "p", note.get(), &blocks, &error));
+        }
+        if (action == "detach") { rig.mgr->detachNote(note.get()); note.reset(); }
+        if (action == "unload") rig.mgr->host()->unload("life");
+        if (action == "hidden") rig.mgr->setPanelActive("life", "p", false);
+        QCoreApplication::processEvents();
+        rig.mgr->flushPanels();
+        QCOMPARE(rig.panel.updates, 0);
+        QVERIFY(rig.logsOf("life").isEmpty());
+        if (action.startsWith("disable") || action.startsWith("remove") || action == "unload") {
+            QCOMPARE(rig.mgr->loadedStates(), 0);
+            QVERIFY(!rig.mgr->panelClick("life", "p", token, &rig.note, &error));
+        }
+        QCOMPARE(lib.opened.size(), 1);
+    }
+
     // ---------------------------------------------------------------- manifest / permissions
     void permissionTableHasTheNewEntries() {
         QMap<QString, PermissionInfo> t;

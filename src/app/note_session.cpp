@@ -279,11 +279,6 @@ void NoteSession::applyTheme(const hn::theme::Theme &t) {
     m_editor->setTheme(t);
     if (wasClean && m_editor->isModified()) { m_editor->markSaved(before); stopTimers(); recompute(); }
     m_toolbar->setTheme(t);
-    // The shared stylesheet hides toolbar icons on hover (text-on-text); give the strip its own hover rule.
-    m_toolbar->setStyleSheet(QString("QToolButton:hover { background: %1; color: %2; border-color: transparent; }"
-                                     "QToolButton:checked { background: transparent; border-bottom: 2px solid %3; }"
-                                     "QToolButton::menu-indicator { image: none; }")
-                                 .arg(t.selection.name(), t.text.name(), t.accent.name()));
 }
 
 } // namespace hn::app

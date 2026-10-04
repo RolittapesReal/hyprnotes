@@ -446,7 +446,13 @@ private slots:
             QVERIFY(!c2.dockPrefs().visible);
         }
         o->setDockVisible(true);
-        QCOMPARE(o->dock()->width(), 320);   // the width the dock had when created; the prefs apply to the next dock
+        o->resize(720, o->height());
+        QTRY_COMPARE(o->width(), 720);
+        QTRY_VERIFY(o->dock()->width() < 410); // Temporary allocation must not overwrite the user's preference.
+        QCOMPARE(c.dockPrefs().width, 410);
+        o->resize(1100, o->height());
+        QTRY_COMPARE(o->dock()->width(), 410);
+        QVERIFY(c.dockPrefs().visible);
         // sticky: a header button appears only now and opens the same panels as a popup
         auto *st = c.openSticky("Beta.md") ? c.stickyOf("Beta.md") : nullptr;
         if (!st) { c.popOut("Beta.md"); st = c.stickyOf("Beta.md"); }

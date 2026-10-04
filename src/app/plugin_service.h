@@ -64,11 +64,12 @@ public:
     // A dock tells which panels it displays; only those are re-rendered by events (PluginManager::setPanelActive, ref-counted).
     void setPanelsShown(QObject *owner, const QStringList &qids);
     bool renderPanel(const QString &qid, NoteSession *s);  // render now (result goes to the hub)
+    void requestPanelRefresh(const QString &qid, NoteSession *s);
     void panelClick(const QString &qid, int token, NoteSession *s);
 
     // ---- sessions ----
     void attach(NoteSession *s);                           // events, pre_save, triggers, toolbar (no-op while inactive)
-    void release(NoteSession *s);                          // before the session dies: flush + detach its bridge
+    void release(NoteSession *s);                          // before the session dies: detach its bridge and cancel unsafe pending work
     PluginNoteBridge *bridgeFor(NoteSession *s);
     void post(const QString &event, NoteSession *s);       // cheap no-op while inactive
 
@@ -99,6 +100,7 @@ private:
     void migrateLegacyMods();
     void refreshSessions();
     void wireSession(NoteSession *s);
+    void collectRetiredBridges();
     QString legacyEnabledPath() const;
     AppController *m_c;
     QString m_dir;
@@ -114,6 +116,7 @@ private:
     QMap<QObject *, QSet<QString>> m_shown;
     std::unique_ptr<hn::plugins::PluginManager> m_mgr;
     QHash<NoteSession *, PluginNoteBridge *> m_bridges;
+    QList<PluginNoteBridge *> m_retiredBridges;
     QHash<NoteSession *, QList<QMetaObject::Connection>> m_conns;
     QMap<QString, QString> m_names;
     QStringList m_legacyPending;

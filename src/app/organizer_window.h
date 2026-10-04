@@ -60,6 +60,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent *) override;
     void dropEvent(QDropEvent *) override;
     void paintEvent(QPaintEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
     bool eventFilter(QObject *o, QEvent *e) override;
 
 private:
@@ -75,6 +76,7 @@ private:
     void showMoreMenu();
     void restyle();
     void syncDock();
+    void allocateColumns(int dockWidth = -1);
 
     AppController *m_c;
     QString m_token, m_folder, m_tag, m_elsewhere;
@@ -103,10 +105,12 @@ private:
     bool m_syncing = false, m_titled = false;
     int m_total = 0;
     QHBoxLayout *m_root = nullptr;
+    QWidget *m_railCol = nullptr, *m_listCol = nullptr, *m_editorCol = nullptr, *m_railLine = nullptr;
+    ui::IconButton *m_railToggle = nullptr;
+    bool m_compactRail = false, m_railOpen = false;
     PanelDock *m_dock = nullptr;
     QWidget *m_dockLine = nullptr;
     DockToggle *m_dockToggle = nullptr;
-    int m_dockExtra = 0;   // window width added while the dock is open
 };
 
 } // namespace hn::app

@@ -1,5 +1,5 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Test)
-add_library(hn_theme STATIC theme.cpp theme_io.cpp icons.cpp config.cpp config.h)
+add_library(hn_theme STATIC theme.cpp theme_io.cpp builtin_themes.cpp builtin_themes.h icons.cpp config.cpp config.h)
 target_include_directories(hn_theme PUBLIC include ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hn_theme PUBLIC Qt6::Widgets Qt6::Svg Qt6::Core)
 

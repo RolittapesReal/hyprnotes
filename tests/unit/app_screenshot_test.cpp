@@ -2,6 +2,9 @@
 #include "app_test_util.h"
 #include <QImage>
 #include <QLineEdit>
+#include <QMenu>
+#include "settings_dialog.h"
+#include "builtin_themes.h"
 
 using namespace apptest;
 
@@ -65,6 +68,60 @@ private slots:
             QTest::qWait(100);
             QVERIFY(w->grab().save(QString("%1/app-sticky-keys-%2%3.png").arg(out, scheme, sfx)));
             hn::app::ui::ShortcutSheet::toggle(w, c.settings().keybindings);
+        }
+    }
+    // Opt-in review sweep: every built-in theme (dark; plus Modernist light) -> organizer, menu, Settings tabs, sticky.
+    void themeSweep() {
+        const QString out = qEnvironmentVariable("HN_SCREENSHOT_DIR");
+        if (out.isEmpty()) QSKIP("HN_SCREENSHOT_DIR not set");
+        QDir().mkpath(out);
+        Lib l;
+        populate(l);
+        AppController c(l.opts());
+        c.setNoteColor("Work/Launch plan.md", 1);
+        QList<QPair<QString, QString>> combos;
+        combos << qMakePair(QString("modernist"), QString("light"));
+        for (const auto &id : hn::theme::detail::builtinThemeIds()) combos << qMakePair(id, QString("dark"));
+        for (const auto &[id, scheme] : combos) {
+            auto st = c.settings(); st.theme = id; st.colorScheme = scheme;
+            c.applySettings(st, c.prefs());
+            const QString tag = id + "-" + scheme;
+            c.showOrganizer();
+            auto *o = c.organizer();
+            o->resize(900, 640);
+            QTRY_VERIFY_WITH_TIMEOUT(o->model()->rowCount() >= 7, 8000);
+            c.openInOrganizer("Meeting notes.md");
+            QTest::qWait(500);
+            QVERIFY(o->grab().save(QString("%1/sweep-%2-organizer.png").arg(out, tag)));
+            QMenu m(o);
+            m.addAction("Open in sticky");
+            m.addAction("Rename...");
+            m.addAction("Tags...");
+            auto *sub = m.addMenu("Color");
+            sub->addAction("Red");
+            m.addSeparator();
+            auto *dis = m.addAction("Disabled item"); dis->setEnabled(false);
+            m.addAction("Delete...");
+            m.ensurePolished();
+            m.resize(m.sizeHint());
+            QVERIFY(m.grab().save(QString("%1/sweep-%2-menu.png").arg(out, tag)));
+            hn::app::SettingsDialog dlg(&c);
+            dlg.resize(700, 600);
+            dlg.show();
+            for (int t = 0; t < dlg.tabs()->count(); ++t) {
+                dlg.showTab(t);
+                QTest::qWait(150);
+                QVERIFY(dlg.grab().save(QString("%1/sweep-%2-settings%3.png").arg(out, tag).arg(t)));
+            }
+            dlg.close();
+            c.openSticky("Work/Launch plan.md");
+            auto *w = c.stickyOf("Work/Launch plan.md");
+            w->resize(360, 300);
+            w->setToolbarShown(true);
+            QTest::qWait(300);
+            QVERIFY(w->grab().save(QString("%1/sweep-%2-sticky.png").arg(out, tag)));
+            c.closeNote("Work/Launch plan.md");
+            QTRY_VERIFY(!c.session("Work/Launch plan.md"));
         }
     }
     void screenshots() {

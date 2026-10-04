@@ -343,7 +343,7 @@ void NoteEditor::editLink()
 {
     if (m_mode != Mode::Visual) return;
     bool ok = false;
-    const QString url = QInputDialog::getText(this, tr("Link"), tr("Address (empty removes the link)"), QLineEdit::Normal,
+    const QString url = QInputDialog::getText(this, tr("Link"), tr("Link address (empty removes the link)"), QLineEdit::Normal,
                                               m_vis->linkAtCursor(), &ok);
     if (ok) m_vis->setLink(url.trimmed());
     m_vis->setFocus();
@@ -484,13 +484,14 @@ void NoteEditor::setTheme(const hn::theme::Theme &t)
     m_vis->setRuleColor(t.border);
     m_vis->setBackgroundColor(t.bg);
     const QString ss = QStringLiteral(
-        "QTextEdit, QPlainTextEdit { background: %1; color: %2; border: none; padding: 0; selection-background-color: %3; selection-color: %2; }")
+        "QTextEdit, QPlainTextEdit { background: %1; color: %2; border: none; border-radius: 0; padding: 0; selection-background-color: %3; selection-color: %2; }")
         .arg(t.bg.name(), t.text.name(), t.selection.name());
     m_vis->setStyleSheet(ss);
     m_src->setStyleSheet(ss);
     m_vis->setFont(f);
     m_src->setFont(mono);
     m_vis->normalizeDocument();
+    restyleCompletionPopup();
 }
 
 } // namespace hn::editor

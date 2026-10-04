@@ -31,7 +31,7 @@ private slots:
         c.config().save(c.settings());
         c.config().reload();
         hn::app::SettingsDialog dlg(&c);
-        QCOMPARE(dlg.themeBox()->count(), 1);
+        QCOMPARE(dlg.themeBox()->count(), 7);
         QVERIFY(!dlg.removeThemeButton()->isEnabled());
         QVERIFY(dlg.importThemeFile(file("t.json")));
         QCOMPARE(dlg.themeBox()->currentText(), QString("inkblue"));
@@ -42,7 +42,7 @@ private slots:
         QVERIFY(dlg.removeThemeButton()->isEnabled());
         dlg.themeBox()->setCurrentIndex(0);                                  // picker applies live
         QCOMPARE(c.settings().theme, QString("modernist"));
-        dlg.themeBox()->setCurrentIndex(1);
+        dlg.themeBox()->setCurrentIndex(dlg.themeBox()->findText("inkblue"));
         QCOMPARE(c.settings().theme, QString("inkblue"));
         QVERIFY(dlg.importThemeFile(file("bad.json", "{x")) == false);
         QVERIFY(dlg.note().contains("not imported"));

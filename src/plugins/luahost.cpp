@@ -11,6 +11,7 @@
 #include <QDateTime>
 #include <chrono>
 #include <ctime>
+#include <limits>
 #include <lua.hpp>
 
 namespace hn::plugins {
@@ -45,6 +46,9 @@ struct PluginState;  // defined below
 struct LuaPluginHost::Impl {
     LuaPluginHost *q = nullptr;
     HostEnv env;
+    int clickSeq = 0;  // tokens never alias callbacks from a replaced Lua state
+    QHash<NoteBridge *, int> noteLeases;
+    QHash<QString, int> dispatches;
     QHash<QString, PluginState *> plugins;  // owned; deleted in forget()/dtor
 };
 
@@ -69,7 +73,7 @@ struct PluginState {
     RateLimiter notify, http, index, panelRefresh;
     // API 2: index time spent in the running callback, note opens, panel click tokens (token -> registry ref, per panel)
     qint64 indexWallUs = 0;
-    int opens = 0, clickSeq = 0;
+    int opens = 0;
     QHash<QString, QHash<int, int>> clicks;
     QString renderingPanel;
     bool storageLoaded = false, storageDirty = false;
@@ -1539,6 +1543,7 @@ LuaPluginHost::~LuaPluginHost() {
 HostEnv &LuaPluginHost::env() { return d->env; }
 
 void LuaPluginHost::setPlugin(const Manifest &m, const QStringList &consented, const PluginRegs *cached) {
+    if (isBusy(m.id)) return; // managers preflight replacements; never overwrite an active state
     forget(m.id);
     auto *p = new PluginState;
     p->d = d.get();
@@ -1571,11 +1576,45 @@ void LuaPluginHost::forget(const QString &id) {
     unload(id);
     if (auto it = d->plugins.find(id); it != d->plugins.end() && !(*it)->busy) { delete *it; d->plugins.erase(it); }
 }
+bool LuaPluginHost::isBusy(const QString &id) const {
+    const auto it = d->plugins.constFind(id);
+    return d->dispatches.value(id) > 0 || (it != d->plugins.constEnd() && (*it)->busy);
+}
+bool LuaPluginHost::usesNote(NoteBridge *note) const {
+    if (!note) return false;
+    if (d->noteLeases.contains(note)) return true;
+    for (const auto *p : std::as_const(d->plugins)) if (p->busy && p->note == note) return true;
+    return false;
+}
 bool LuaPluginHost::isLoaded(const QString &id) const { auto it = d->plugins.constFind(id); return it != d->plugins.constEnd() && (*it)->L; }
 int LuaPluginHost::loadedCount() const { int n = 0; for (const auto &p : d->plugins) n += p->L ? 1 : 0; return n; }
 quint64 LuaPluginHost::memoryUsed(const QString &id) const { auto it = d->plugins.constFind(id); return it == d->plugins.constEnd() ? 0 : (*it)->mem; }
 
 namespace {
+
+// A host dispatch can invoke several Lua callbacks. Retain the detached bridge
+// between them as well as during each callback; the app owns the bridge itself.
+class NoteLease {
+public:
+    NoteLease(LuaPluginHost *host, LuaPluginHost::Impl *impl, const QString &id, NoteBridge *note)
+        : host_(host), impl_(impl), id_(id), note_(note) {
+        ++impl_->dispatches[id_];
+        if (note_) ++impl_->noteLeases[note_];
+    }
+    ~NoteLease() {
+        if (--impl_->dispatches[id_] == 0) impl_->dispatches.remove(id_);
+        if (note_ && --impl_->noteLeases[note_] == 0) impl_->noteLeases.remove(note_);
+        // Also notify after the enclosing dispatch releases its final lease.
+        emit host_->callbackFinished(id_);
+    }
+    NoteLease(const NoteLease &) = delete;
+    NoteLease &operator=(const NoteLease &) = delete;
+private:
+    LuaPluginHost *host_;
+    LuaPluginHost::Impl *impl_;
+    const QString id_;
+    NoteBridge *const note_;
+};
 
 int budgetMs(const HostEnv &e, Budget b) {
     switch (b) {
@@ -1667,6 +1706,7 @@ CallResult callLua(LuaPluginHost *q, LuaPluginHost::Impl *d, const QString &id, 
     } else if (countFailure) {
         noteFailure(q, d, id, r.err, &r.disabled);
     }
+    emit q->callbackFinished(id);
     return r;
 }
 
@@ -1734,6 +1774,7 @@ bool LuaPluginHost::ensureLoaded(const QString &id, QString *err) {
 
 bool LuaPluginHost::run(const QString &id, Kind kind, const QString &localId, NoteBridge *note, QString *err) {
     auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+    NoteLease lease(this, d.get(), id, note);
     if (!ensureLoaded(id, err)) return false;
     const QString key = QString::fromLatin1(kind == Kind::Command ? "cmd:" : kind == Kind::Toolbar ? "tb:" : "menu:") + localId;
     auto it = d->plugins.find(id);
@@ -1745,30 +1786,34 @@ bool LuaPluginHost::run(const QString &id, Kind kind, const QString &localId, No
 }
 
 void LuaPluginHost::deliver(const QString &id, const QString &event, const QString &arg, NoteBridge *note) {
-    auto it = d->plugins.find(id);
+    const QString pluginId = id, payload = arg;
+    NoteLease lease(this, d.get(), pluginId, note);
+    auto it = d->plugins.find(pluginId);
     if (event == QLatin1String("link.activate")) return;  // only PluginManager::activateLink delivers it (with a table argument)
     if (it == d->plugins.end() || (*it)->disabled || !(*it)->regs.events.contains(event)) return;
-    if (!ensureLoaded(id)) return;
-    QList<int> refs = (*d->plugins.find(id))->ev.value(event);
+    if (!ensureLoaded(pluginId)) return;
+    QList<int> refs = (*d->plugins.find(pluginId))->ev.value(event);
     for (int ref : refs) {
-        const auto r = callLua(this, d.get(), id, Budget::Event, note, [&](lua_State *L) {
+        const auto r = callLua(this, d.get(), pluginId, Budget::Event, note, [&](lua_State *L) {
             lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
-            return pushQ(L, arg) ? 1 : -1;
+            return pushQ(L, payload) ? 1 : -1;
         }, nullptr);
-        if (r.disabled || !isLoaded(id)) break;
+        if (r.disabled || !isLoaded(pluginId)) break;
     }
 }
 
 QString LuaPluginHost::preSave(const QString &id, const QString &text, NoteBridge *note) {
-    auto it = d->plugins.find(id);
+    const QString pluginId = id;
+    NoteLease lease(this, d.get(), pluginId, note);
+    auto it = d->plugins.find(pluginId);
     if (it == d->plugins.end() || (*it)->disabled || !(*it)->regs.events.contains(QStringLiteral("note.pre_save"))) return text;
-    if (!ensureLoaded(id)) return text;
+    if (!ensureLoaded(pluginId)) return text;
     QString cur = text;
-    const QList<int> refs = (*d->plugins.find(id))->ev.value(QStringLiteral("note.pre_save"));
+    const QList<int> refs = (*d->plugins.find(pluginId))->ev.value(QStringLiteral("note.pre_save"));
     for (int ref : refs) {
         QString out;
         bool got = false;
-        const auto r = callLua(this, d.get(), id, Budget::PreSave, note, [&](lua_State *L) {
+        const auto r = callLua(this, d.get(), pluginId, Budget::PreSave, note, [&](lua_State *L) {
             lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
             return pushQ(L, cur) ? 1 : -1;
         }, [&](lua_State *L) {
@@ -1779,12 +1824,13 @@ QString LuaPluginHost::preSave(const QString &id, const QString &text, NoteBridg
             }
         });
         if (r.ok && got) cur = out;
-        if (r.disabled || !isLoaded(id)) break;
+        if (r.disabled || !isLoaded(pluginId)) break;
     }
     return cur;
 }
 
 bool LuaPluginHost::runTrigger(const QString &id, const QString &pattern, NoteBridge *note, QString *replacement) {
+    NoteLease lease(this, d.get(), id, note);
     if (!ensureLoaded(id)) return false;
     auto it = d->plugins.find(id);
     if (it == d->plugins.end() || !(*it)->cb.contains("trig:" + pattern)) return false;
@@ -1836,10 +1882,11 @@ bool blkClick(lua_State *L, int t, BlockCtx &c, bool required, int &token, QStri
     bool ok = true;
     if (lua_isfunction(L, -1)) {
         if (c.refs.size() >= kMaxBlocks) { err = QStringLiteral("too many click handlers"); ok = false; }
+        else if (c.p->d->clickSeq == std::numeric_limits<int>::max()) { err = QStringLiteral("click token limit reached"); ok = false; }
         else {
             lua_pushvalue(L, -1);
             const int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-            token = ++c.p->clickSeq;
+            token = ++c.p->d->clickSeq;
             c.refs << ref;
             c.tokens[token] = ref;
         }
@@ -1962,6 +2009,7 @@ bool fitsStr(lua_State *L, std::initializer_list<const QString *> v) {
 
 bool LuaPluginHost::renderPanel(const QString &id, const QString &panelId, NoteBridge *note, QList<PanelBlock> *out, QString *err) {
     auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+    NoteLease lease(this, d.get(), id, note);
     if (!ensureLoaded(id, err)) return false;
     auto it = d->plugins.find(id);
     if (it == d->plugins.end() || !(*it)->cb.contains("panel:" + panelId)) return fail(QStringLiteral("unknown panel '%1'").arg(panelId));
@@ -1994,6 +2042,7 @@ bool LuaPluginHost::panelClick(const QString &id, const QString &panelId, int to
 }
 
 void LuaPluginHost::deliverPanelEvent(const QString &id, const QString &panelId, const QString &event, const QString &arg, NoteBridge *note) {
+    NoteLease lease(this, d.get(), id, note);
     auto it = d->plugins.find(id);
     if (it == d->plugins.end() || (*it)->disabled) return;
     if (!ensureLoaded(id)) return;
@@ -2011,6 +2060,7 @@ QList<CompletionItem> LuaPluginHost::complete(const QString &id, const QString &
     QList<CompletionItem> items;
     int drop = 0;
     if (dropped) *dropped = 0;
+    NoteLease lease(this, d.get(), id, note);
     if (!ensureLoaded(id, err)) return items;
     auto it = d->plugins.find(id);
     if (it == d->plugins.end() || !(*it)->cb.contains("cmp:" + completeId)) { if (err) *err = QStringLiteral("unknown completion '%1'").arg(completeId); return items; }
@@ -2070,11 +2120,14 @@ QList<CompletionItem> LuaPluginHost::complete(const QString &id, const QString &
 }
 
 bool LuaPluginHost::activateLink(const QString &id, const LinkActivation &ref, NoteBridge *note) {
-    auto it = d->plugins.find(id);
+    const QString pluginId = id;
+    const LinkActivation link = ref;
+    NoteLease lease(this, d.get(), pluginId, note);
+    auto it = d->plugins.find(pluginId);
     if (it == d->plugins.end() || (*it)->disabled || !(*it)->regs.events.contains(QStringLiteral("link.activate"))) return false;
-    if (!ensureLoaded(id)) return false;
+    if (!ensureLoaded(pluginId)) return false;
     auto pushRef = [&](lua_State *L) -> bool {
-        const QString kind = capUtf8(ref.kind, 16), target = capUtf8(ref.target, 1024), alias = capUtf8(ref.alias, 512), anchor = capUtf8(ref.anchor, 512), resolved = capUtf8(ref.resolved, 1024);
+        const QString kind = capUtf8(link.kind, 16), target = capUtf8(link.target, 1024), alias = capUtf8(link.alias, 512), anchor = capUtf8(link.anchor, 512), resolved = capUtf8(link.resolved, 1024);
         if (!fitsStr(L, {&kind, &target, &alias, &anchor, &resolved})) return false;
         lua_createtable(L, 0, 5);
         auto put = [&](const char *k, const QString &v, bool always) { if (!always && v.isEmpty()) return; pushQRaw(L, v); lua_setfield(L, -2, k); };
@@ -2085,23 +2138,23 @@ bool LuaPluginHost::activateLink(const QString &id, const LinkActivation &ref, N
         put("resolved", resolved, false);
         return true;
     };
-    it = d->plugins.find(id);
+    it = d->plugins.find(pluginId);
     if (const auto pat = (*it)->cb.constFind(QStringLiteral("linkpat")); pat != (*it)->cb.constEnd()) {
         const int pref = *pat;
         bool pass = false;
-        const auto r = callLua(this, d.get(), id, Budget::Event, note, [&](lua_State *L) { lua_rawgeti(L, LUA_REGISTRYINDEX, pref); return pushRef(L) ? 1 : -1; },
+        const auto r = callLua(this, d.get(), pluginId, Budget::Event, note, [&](lua_State *L) { lua_rawgeti(L, LUA_REGISTRYINDEX, pref); return pushRef(L) ? 1 : -1; },
                                [&](lua_State *L) { pass = lua_toboolean(L, -1); });
         if (!r.ok || !pass || r.disabled) return false;
     }
-    it = d->plugins.find(id);
+    it = d->plugins.find(pluginId);
     if (it == d->plugins.end()) return false;
     const QList<int> refs = (*it)->ev.value(QStringLiteral("link.activate"));
     for (int fref : refs) {
         bool handled = false;
-        const auto r = callLua(this, d.get(), id, Budget::Event, note, [&](lua_State *L) { lua_rawgeti(L, LUA_REGISTRYINDEX, fref); return pushRef(L) ? 1 : -1; },
+        const auto r = callLua(this, d.get(), pluginId, Budget::Event, note, [&](lua_State *L) { lua_rawgeti(L, LUA_REGISTRYINDEX, fref); return pushRef(L) ? 1 : -1; },
                                [&](lua_State *L) { handled = lua_toboolean(L, -1); });
         if (r.ok && handled) return true;
-        if (r.disabled || !isLoaded(id)) break;
+        if (r.disabled || !isLoaded(pluginId)) break;
     }
     return false;
 }

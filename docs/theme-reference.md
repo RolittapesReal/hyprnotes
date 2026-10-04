@@ -2,7 +2,10 @@
 
 ## Themes
 
-Built-in: `modernist` (light and dark). Custom themes live at `$XDG_CONFIG_HOME/hyprnotes/themes/<name>.json`
+Built-ins, in picker order: `modernist` (light and dark), `catppuccin-mocha`, `tokyo-night`, `dracula`, `nord`,
+`gruvbox-dark`, and `one-dark`. The six named presets provide dark colors; explicitly selecting Light uses all Modernist light tokens.
+Picking a bundled dark preset in Settings switches the color scheme to Dark when the UI is currently light; importing a theme never changes the scheme. Built-ins are compiled into the app and need no configuration files.
+Custom themes live at `$XDG_CONFIG_HOME/hyprnotes/themes/<name>.json`
 (default `~/.config/hyprnotes/themes/`). Select one with `"theme": "<name>"` in `config.json`.
 A sample is at `packaging/share/themes/modernist-example.json`.
 
@@ -18,7 +21,7 @@ A sample is at `packaging/share/themes/modernist-example.json`.
 ### Import and export
 
 Settings > Appearance > Theme: pick a theme (applies live and is saved), **Import theme...**, **Export current theme...**, **Remove**
-(user themes only; `modernist` cannot be removed). Dropping a `.json`/`.yaml`/`.yml` file on the Settings dialog or the organizer
+(user themes only; built-ins cannot be removed). Dropping a `.json`/`.yaml`/`.yml` file on the Settings dialog or the organizer
 (outside the text editor) imports and selects it. CLI: `hyprnotes --import-theme FILE` imports the file and, when `config.json`
 exists, selects it; a running instance applies it live through its config watcher. The result is printed; exit code 1 on failure.
 
@@ -30,9 +33,10 @@ danger=08, success=0B, accent=0D, noteAccent=08,0D,0A,0B,03,07. VS Code: bg/text
 `panel.border`, `editorLineNumber.foreground`, `errorForeground`, accent from `focusBorder` or `button.background`.
 
 Rules: the installed name is the `name` field (or file name) reduced to `[A-Za-z0-9._-]`, max 48; names with `/`, `\` or `..` are rejected;
-`modernist` is reserved. An identical theme is reused; a different theme with an existing name is installed as `name-2`, `name-3`, ...
-(never overwritten). A text/bg contrast below 4.5:1 is imported with a warning. Export writes the theme file (the built-in
-exports as `modernist-copy`).
+all seven built-in IDs are reserved, case-insensitively. Files using those IDs are hidden from the picker and cannot override a built-in;
+they are left on disk. An identical theme is reused; a different theme with an existing name is installed as `name-2`, `name-3`, ...
+(never overwritten). A text/bg contrast below 4.5:1 is imported with a warning. Export writes a user theme unchanged, or exports a built-in
+as `<canonical-id>-copy` (for example, `nord-copy`). Import that copy to edit or remove it normally; dark-only copies retain Modernist light inheritance.
 
 ### Tokens
 
@@ -51,14 +55,16 @@ exports as `modernist-copy`).
 | monoFamily | string (default JetBrains Mono, then monospace) | |
 | baseSize | int px 8..32 | 14 |
 | lineHeight | number 1.0..3.0 | 1.45 |
-| padding | int px 0..64 | 14 (editor padding; pinned header default) |
-| radius | int px 0..32 | 0 |
+| padding | int px 0..64 | 16 (editor padding; aligned with organizer header text) |
+| radius | int px 0..32 | 4 |
 | borderWidth | int px 0..4 | 1 |
 
 Modernist contrast (WCAG, checked by `theme_test`): text/bg, muted/bg, accentText/accent all >= 4.5:1 in both schemes.
 The light accent is #D92E18, slightly darker than #E5341D, because white on #E5341D is only 4.34:1.
 
 The look is flat: no gradients, shadows or blur; 8px grid; 2px accent focus rings; selected rows show a 3px accent bar at left.
+Built-ins use 4px control corners and 6px popup corners. Custom popup radius is control radius + 2px, capped at 32px;
+an explicit `radius: 0` keeps both square. Document surfaces and structural panes remain square.
 QSS cannot do letter-spacing or uppercase, so use `hn::theme::labelFont(theme)` for tracked uppercase labels.
 
 ## config.json

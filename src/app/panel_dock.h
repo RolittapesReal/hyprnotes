@@ -13,6 +13,7 @@
 #include <QTextDocument>
 #include <memory>
 #include <vector>
+class QToolButton;
 
 namespace hn::app {
 
@@ -25,6 +26,7 @@ class DockToggle : public QAbstractButton {
 public:
     explicit DockToggle(QWidget *p) : QAbstractButton(p) {
         setCheckable(true);
+        setFocusPolicy(Qt::TabFocus);
         setFixedSize(32, 32);
         setCursor(Qt::PointingHandCursor);
         setToolTip(QObject::tr("Panels (Ctrl+Shift+L)"));
@@ -89,6 +91,7 @@ signals:
 protected:
     void paintEvent(QPaintEvent *) override;
     void resizeEvent(QResizeEvent *) override;
+    void changeEvent(QEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void leaveEvent(QEvent *) override;
@@ -103,6 +106,7 @@ private:
         int doc = -1;   // Markdown: index into m_docs
     };
     void relayout();
+    void restyle();
     bool actionable(const Row &r) const;
     int rowAt(int contentY) const;
     void ensureVisible(int row);
@@ -133,6 +137,7 @@ public:
 signals:
     void closeRequested();
     void widthChosen(int width);                         // the user finished dragging the edge
+    void widthPreviewed(int width);                      // transient allocation, never persisted
 protected:
     void paintEvent(QPaintEvent *) override;
     void resizeEvent(QResizeEvent *) override;
@@ -142,19 +147,25 @@ protected:
     void mouseMoveEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
+    void changeEvent(QEvent *) override;
 private:
     void rebuild();
     void markShown();
     void showCurrent();
     void activated(int click, const QString &path, int line);
     QList<QPair<QString, QString>> tabs() const;         // (qid, title)
+    void layoutTabs();
+    QFont tabFont() const;
+    int headerHeight() const;
     AppController *m_c;
     QPointer<NoteSession> m_session;
     PanelView *m_view;
     ui::IconButton *m_close;
+    QToolButton *m_overflow = nullptr;
+    QList<QRect> m_tabRects;
     QString m_cur;
     bool m_popup;
-    int m_dragX = -1, m_dragW = 0, m_hoverTab = -1;
+    int m_dragX = -1, m_dragW = 0, m_dragDesired = 0, m_hoverTab = -1;
 };
 
 }  // namespace hn::app

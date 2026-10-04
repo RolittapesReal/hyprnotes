@@ -8,6 +8,7 @@
 using namespace hn::theme;
 
 static const QByteArray kNative = J("{'version':1,'name':'Mine','light':{'accent':'#1F4FB5'},'dark':{}}");
+static const QStringList kBuiltins{"modernist", "catppuccin-mocha", "tokyo-night", "dracula", "nord", "gruvbox-dark", "one-dark"};
 
 class ThemeIoTest : public QObject {
     Q_OBJECT
@@ -35,7 +36,7 @@ private slots:
         QVERIFY(QFile::exists(themesDir() + "/Mine.json"));
         QCOMPARE(loadTheme("Mine", false).accent, QColor("#1F4FB5"));
         QVERIFY(lastThemeError().isEmpty());
-        QCOMPARE(listThemes(), (QStringList{"modernist", "Mine"}));
+        QCOMPARE(listThemes(), kBuiltins + QStringList{"Mine"});
     }
     void invalidInputsRejected_data() {
         QTest::addColumn<QByteArray>("bytes");
@@ -57,7 +58,7 @@ private slots:
         QString err;
         QVERIFY(!imp(src("bad.json", bytes), nullptr, &err));
         QVERIFY2(err.contains(msg), qPrintable(err));
-        QVERIFY(listThemes() == QStringList{"modernist"});
+        QCOMPARE(listThemes(), kBuiltins);
         QVERIFY(!QFile::exists(dir.path() + "/evil.json"));
     }
     void oversizeRejected() {
@@ -151,6 +152,107 @@ private slots:
         QVERIFY(imp(src("a.json", kNative), &name));
         QVERIFY(removeTheme(name));
         QVERIFY(!QFile::exists(themesDir() + "/Mine.json"));
+    }
+    void reservedNames_data() {
+        QTest::addColumn<QString>("id");
+        for (const QString &canonical : kBuiltins)
+            for (const QString &id : {canonical, canonical.toUpper()}) QTest::newRow(qPrintable(id)) << id;
+    }
+    void reservedNames() {
+        QFETCH(QString, id);
+        QVERIFY(isBuiltinTheme(id));
+        QVERIFY(!QFile::exists(themesDir()));
+    }
+    void nonReservedNamesAndEmptyAliases() {
+        for (const QString &id : {QString(), QString("modernist-copy"), QString("nord-copy"), QString(" nord"), QString("nord "), QString("unknown")})
+            QVERIFY(!isBuiltinTheme(id));
+        QCOMPARE(builtinThemeObject()["name"].toString(), QString("modernist-copy"));
+        for (bool dark : {false, true}) {
+            const Theme alias = loadTheme({}, dark);
+            QVERIFY(lastThemeError().isEmpty());
+            QCOMPARE(alias.bg, loadTheme("modernist", dark).bg);
+        }
+        const QString path = dir.filePath("empty-alias.json");
+        QVERIFY(exportTheme({}, path));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(f.readAll()).object(), builtinThemeObject());
+        QVERIFY(!QFile::exists(themesDir()));
+    }
+    void reservedImportsRejected_data() { reservedNames_data(); }
+    void reservedImportsRejected() {
+        QFETCH(QString, id);
+        const QJsonObject object{{"version", 1}, {"name", id}, {"dark", QJsonObject{{"bg", "#010203"}}}};
+        QString error;
+        QVERIFY(!imp(src("reserved.json", QJsonDocument(object).toJson()), nullptr, &error));
+        QVERIFY2(error.contains("built-in"), qPrintable(error));
+        QVERIFY(!QFile::exists(themesDir()));
+    }
+    void shadowFilesStayHiddenAndDoNotOverride_data() { reservedNames_data(); }
+    void shadowFilesStayHiddenAndDoNotOverride() {
+        QFETCH(QString, id);
+        QVERIFY(QDir().mkpath(themesDir()));
+        const QByteArray shadow = J("{'version':1,'dark':{'bg':'#010203'},'light':{'bg':'#010203'}}");
+        const QString path = src("xdg/hyprnotes/themes/" + id + ".json", shadow);
+        src("xdg/hyprnotes/themes/zeta.json", kNative);
+        src("xdg/hyprnotes/themes/alpha.json", kNative);
+        src("xdg/hyprnotes/themes/a..b.json", kNative);
+        QCOMPARE(listThemes(), kBuiltins + QStringList({"alpha", "zeta"}));
+        for (bool dark : {false, true}) {
+            const Theme theme = loadTheme(id, dark);
+            QVERIFY2(lastThemeError().isEmpty(), qPrintable(lastThemeError()));
+            QVERIFY(theme.bg != QColor("#010203"));
+            QCOMPARE(theme.bg, loadTheme(id.toLower(), dark).bg);
+        }
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), shadow);
+    }
+    void reservedRemovalPreservesShadowBytes_data() { reservedNames_data(); }
+    void reservedRemovalPreservesShadowBytes() {
+        QFETCH(QString, id);
+        QVERIFY(QDir().mkpath(themesDir()));
+        const QString path = src("xdg/hyprnotes/themes/" + id + ".json", kNative);
+        QString error;
+        QVERIFY(!removeTheme(id, &error));
+        QVERIFY2(error.contains("built-in"), qPrintable(error));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), kNative);
+    }
+    void exportedCopiesAreEditable_data() { reservedNames_data(); }
+    void exportedCopiesAreEditable() {
+        QFETCH(QString, id);
+        const QString path = dir.filePath("copy.json");
+        QString error, name;
+        QVERIFY2(exportTheme(id, path, &error), qPrintable(error));
+        QFile exported(path);
+        QVERIFY(exported.open(QIODevice::ReadOnly));
+        const QJsonObject object = QJsonDocument::fromJson(exported.readAll()).object();
+        QCOMPARE(object["name"].toString(), id.toLower() + "-copy");
+        QCOMPARE(object["version"].toInt(), 1);
+        QCOMPARE(object["base"].toString(), QString("modernist"));
+        QVERIFY(object["dark"].isObject());
+        if (id.toLower() != "modernist") {
+            QVERIFY(!object.contains("light"));
+            QCOMPARE(object["dark"].toObject()["radius"].toInt(), 4);
+            QCOMPARE(object["dark"].toObject()["borderWidth"].toInt(), 1);
+            for (const char *inherited : {"fontFamily", "monoFamily", "baseSize", "padding", "lineHeight"})
+                QVERIFY(!object["dark"].toObject().contains(inherited));
+        }
+        QVERIFY2(imp(path, &name, &error), qPrintable(error));
+        QCOMPARE(name, id.toLower() + "-copy");
+        QVERIFY(!isBuiltinTheme(name));
+        const Theme original = loadTheme(id, true);
+        QCOMPARE(loadTheme(name, true).accent, original.accent);
+        QJsonObject edited = object;
+        QJsonObject dark = edited["dark"].toObject();
+        dark["accent"] = "#123456";
+        edited["dark"] = dark;
+        src("xdg/hyprnotes/themes/" + name + ".json", QJsonDocument(edited).toJson());
+        QCOMPARE(loadTheme(name, true).accent, QColor("#123456"));
+        QCOMPARE(loadTheme(id, true).accent, original.accent);
+        QVERIFY(removeTheme(name, &error));
     }
 };
 QTEST_MAIN(ThemeIoTest)

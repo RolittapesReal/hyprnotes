@@ -5,12 +5,15 @@
 // two seconds so a reflex click cannot approve.
 #include "hn/plugins/runtime.h"
 #include <QDialog>
+#include <QPointer>
 #include <QTimer>
 
 class QShowEvent;
 
 class QPushButton;
 class QLabel;
+class QScrollArea;
+class QScreen;
 
 namespace hn::app {
 
@@ -40,11 +43,20 @@ public:
     static bool run(const ConsentRequest &r, QWidget *parent);
 protected:
     void showEvent(QShowEvent *e) override;   // the two seconds start when the dialog actually appears
+    bool event(QEvent *event) override;
 private:
+    void restyle();
+    void updateBounds();
     QPushButton *m_approve, *m_cancel;
     QLabel *m_hash, *m_wait;
+    QLabel *m_warningIcon, *m_nativeIcon = nullptr, *m_nativeText = nullptr;
+    QWidget *m_head, *m_bar;
     QWidget *m_warn, *m_native = nullptr;
-    QList<QLabel *> m_perms;
+    QScrollArea *m_details;
+    QPointer<QScreen> m_screen;
+    QMetaObject::Connection m_screenGeometryConnection;
+    bool m_layoutReady = false, m_updatingBounds = false;
+    QList<QLabel *> m_perms, m_permIcons;
     QTimer m_timer;
 };
 

@@ -52,6 +52,7 @@ protected:
     void resizeEvent(QResizeEvent *) override;
     void moveEvent(QMoveEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
+    bool eventFilter(QObject *, QEvent *) override;
 
 private:
     Qt::Edges edgesAt(const QPoint &p) const;

@@ -5,6 +5,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPointer>
 #include <algorithm>
 
@@ -57,8 +58,8 @@ CommandPalette::CommandPalette(QWidget *host, const QList<Item> &items, std::fun
     m_input->setPlaceholderText(tr("Type a plugin command"));
     m_input->setAccessibleName(tr("Search plugin commands"));
     m_input->setFrame(false);
-    m_input->setFont(ui::uiFont(15));
-    m_input->setStyleSheet(QString("QLineEdit { background: transparent; border: none; padding: 0 16px; color: %1; }").arg(ui::theme().text.name()));
+    restyle();
+    connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, this, &CommandPalette::restyle);
     m_input->installEventFilter(this);
     host->installEventFilter(this);
     connect(m_input, &QLineEdit::textChanged, this, [this] { refilter(); });
@@ -70,10 +71,24 @@ CommandPalette::CommandPalette(QWidget *host, const QList<Item> &items, std::fun
 }
 
 void CommandPalette::place() {
-    const int w = qMin(560, m_host->width() - 32);
-    const int rows = qMax(1, qMin(int(m_shown.size()), kMaxRows));
-    setGeometry((m_host->width() - w) / 2, qMin(48, qMax(8, m_host->height() / 8)), w, kInput + 1 + rows * kRow + 1);
-    m_input->setGeometry(0, 0, width(), kInput);
+    const int w = qMax(1, qMin(560, m_host->width() - 32));
+    const int top = qMin(48, qMax(8, m_host->height() / 8));
+    const int available = qMax(1, m_host->height() - top - 8);
+    m_visibleRows = qBound(1, (available - m_inputH - 2) / m_rowH, kMaxRows);
+    const int rows = qMax(1, qMin(int(m_shown.size()), m_visibleRows));
+    setGeometry((m_host->width() - w) / 2, top, w, qMin(available, m_inputH + 2 + rows * m_rowH));
+    m_input->setGeometry(1, 1, width() - 2, qMin(height() - 2, m_inputH));
+    if (m_sel < m_top) m_top = m_sel;
+    if (m_sel >= m_top + m_visibleRows) m_top = m_sel - m_visibleRows + 1;
+    update();
+}
+
+void CommandPalette::restyle() {
+    m_input->setFont(ui::uiFont(qMax(15, ui::theme().baseSize + 1)));
+    m_input->setStyleSheet(QString("QLineEdit { background: transparent; border: none; padding: 0 16px; color: %1; }").arg(ui::theme().text.name()));
+    m_inputH = qMax(kInput, m_input->fontMetrics().height() + 16);
+    m_rowH = qMax(kRow, QFontMetrics(ui::uiFont(qMax(13, ui::theme().baseSize - 1))).height() + 12);
+    place();
 }
 
 void CommandPalette::setFilter(const QString &q) { m_input->setText(q); }
@@ -121,12 +136,12 @@ bool CommandPalette::eventFilter(QObject *o, QEvent *e) {
         case Qt::Key_Return: case Qt::Key_Enter: activateCurrent(); return true;
         case Qt::Key_Down: if (n) m_sel = (m_sel + 1) % n; break;
         case Qt::Key_Up: if (n) m_sel = (m_sel + n - 1) % n; break;
-        case Qt::Key_PageDown: m_sel = qMin(n - 1, m_sel + kMaxRows); break;
-        case Qt::Key_PageUp: m_sel = qMax(0, m_sel - kMaxRows); break;
+        case Qt::Key_PageDown: m_sel = qMax(0, qMin(n - 1, m_sel + m_visibleRows)); break;
+        case Qt::Key_PageUp: m_sel = qMax(0, m_sel - m_visibleRows); break;
         default: return false;
         }
         if (m_sel < m_top) m_top = m_sel;
-        if (m_sel >= m_top + kMaxRows) m_top = m_sel - kMaxRows + 1;
+        if (m_sel >= m_top + m_visibleRows) m_top = m_sel - m_visibleRows + 1;
         update();
         return true;
     }
@@ -134,41 +149,46 @@ bool CommandPalette::eventFilter(QObject *o, QEvent *e) {
 }
 
 void CommandPalette::mousePressEvent(QMouseEvent *e) {
-    const int row = (e->position().toPoint().y() - kInput - 1) / kRow;
-    if (row >= 0 && m_top + row < m_shown.size()) { m_sel = m_top + row; activateCurrent(); }
+    const int y = e->position().toPoint().y() - m_inputH - 1;
+    const int row = y / m_rowH;
+    if (y >= 0 && row < m_visibleRows && m_top + row < m_shown.size()) { m_sel = m_top + row; activateCurrent(); }
 }
 
 void CommandPalette::paintEvent(QPaintEvent *) {
     QPainter p(this);
     const auto &t = ui::theme();
-    p.fillRect(rect(), t.surface);
-    p.fillRect(QRect(0, kInput, width(), 1), t.border);
+    p.fillRect(rect(), t.bg);
+    const int radius = hn::theme::popupRadius(t);
+    p.setRenderHint(QPainter::Antialiasing, radius > 0);
     p.setPen(QPen(t.text, 1));
-    p.drawRect(rect().adjusted(0, 0, -1, -1));
-    p.fillRect(QRect(0, 0, 4, kInput), t.accent);
+    p.setBrush(t.surface);
+    p.drawRoundedRect(rect().adjusted(0, 0, -1, -1), radius, radius);
+    QPainterPath clip; clip.addRoundedRect(QRectF(rect().adjusted(1, 1, -1, -1)), radius, radius); p.setClipPath(clip);
+    p.fillRect(QRect(0, m_inputH, width(), 1), t.border);
+    p.fillRect(QRect(0, 0, 4, m_inputH), t.accent);
     if (m_shown.isEmpty()) {
-        p.setFont(ui::uiFont(13));
+        p.setFont(ui::uiFont(qMax(13, t.baseSize - 1)));
         p.setPen(t.muted);
-        p.drawText(QRect(16, kInput + 1, width() - 32, kRow), Qt::AlignVCenter | Qt::AlignLeft,
+        p.drawText(QRect(16, m_inputH + 1, width() - 32, height() - m_inputH - 2), Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap,
                    m_all.isEmpty() ? tr("No plugin commands. Enable plugins in Settings > Plugins.") : tr("No matching command"));
         return;
     }
-    for (int r = 0; r < kMaxRows && m_top + r < m_shown.size(); ++r) {
+    for (int r = 0; r < m_visibleRows && m_top + r < m_shown.size(); ++r) {
         const Item &it = m_shown[m_top + r];
-        const QRect row(1, kInput + 1 + r * kRow, width() - 2, kRow);
+        const QRect row(1, m_inputH + 1 + r * m_rowH, width() - 2, m_rowH);
         const bool sel = m_top + r == m_sel;
         if (sel) { p.fillRect(row, t.selection); p.fillRect(QRect(row.left(), row.top(), 3, row.height()), t.accent); }
-        p.setFont(ui::uiFont(13, sel ? QFont::DemiBold : QFont::Normal));
+        p.setFont(ui::uiFont(qMax(13, t.baseSize - 1), sel ? QFont::DemiBold : QFont::Normal));
         p.setPen(t.text);
-        const QFont small = ui::uiFont(11, QFont::DemiBold);
+        const QFont small = ui::uiFont(qMax(11, t.baseSize - 3), QFont::DemiBold);
         const QFontMetrics sm(small);
         const QString right = it.keyText.isEmpty() ? it.plugin : it.plugin + QStringLiteral("   ") + it.keyText;
         const int rw = qMin(width() / 2, sm.horizontalAdvance(right) + 8);
-        p.drawText(QRect(16, row.top(), row.width() - rw - 32, kRow), Qt::AlignVCenter | Qt::AlignLeft,
+        p.drawText(QRect(16, row.top(), row.width() - rw - 32, m_rowH), Qt::AlignVCenter | Qt::AlignLeft,
                    QFontMetrics(p.font()).elidedText(it.title, Qt::ElideRight, row.width() - rw - 32));
         p.setFont(small);
         p.setPen(t.muted);
-        p.drawText(QRect(row.right() - rw - 12, row.top(), rw, kRow), Qt::AlignVCenter | Qt::AlignRight, sm.elidedText(right, Qt::ElideLeft, rw));
+        p.drawText(QRect(row.right() - rw - 12, row.top(), rw, m_rowH), Qt::AlignVCenter | Qt::AlignRight, sm.elidedText(right, Qt::ElideLeft, rw));
     }
 }
 

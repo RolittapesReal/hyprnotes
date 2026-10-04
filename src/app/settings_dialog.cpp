@@ -1,4 +1,7 @@
 #include "settings_dialog.h"
+#include <QGuiApplication>
+#include <QStyleHints>
+#include "action_row.h"
 #include "plugins_page.h"
 #include "hn/platform/autostart.h"
 #include "ui_common.h"
@@ -16,6 +19,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTimer>
@@ -27,16 +32,28 @@ using namespace hn::theme;
 namespace hn::app {
 
 namespace {
+class FirstRunDialog : public QDialog {
+protected:
+    bool event(QEvent *event) override {
+        const bool handled = QDialog::event(event);
+        if (layout() && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize))
+            setMinimumHeight(layout()->totalHeightForWidth(width()));
+        return handled;
+    }
+};
+
 QLabel *section(const QString &t, QWidget *p) {
     auto *l = new QLabel(t, p);
-    l->setFont(ui::labelFont(10));
-    l->setStyleSheet(QString("color: %1;").arg(ui::theme().muted.name()));
+    l->setProperty("hnRole", "section");
+    l->setTextFormat(Qt::PlainText);
+    l->setWordWrap(true);
     return l;
 }
 QLabel *hint(const QString &t, QWidget *p) {
     auto *l = new QLabel(t, p);
     l->setWordWrap(true);
-    l->setStyleSheet(QString("color: %1;").arg(ui::theme().muted.name()));
+    l->setTextFormat(Qt::PlainText);
+    l->setProperty("hnRole", "hint");
     return l;
 }
 QWidget *page(QVBoxLayout **out, QWidget *parent) {
@@ -46,37 +63,69 @@ QWidget *page(QVBoxLayout **out, QWidget *parent) {
     (*out)->setSpacing(8);
     return w;
 }
+QWidget *scrollPage(QWidget *content) {
+    auto *scroll = new QScrollArea(content->parentWidget());
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(content);
+    return scroll;
+}
 } // namespace
 
 QString runFirstRunDialog(const QString &suggested) {
-    QDialog d;
+    FirstRunDialog d;
+    d.setObjectName("hnFirstRunDialog");
     d.setWindowTitle(QObject::tr("Welcome to Hyprnotes"));
     d.setWindowIcon(ui::appIcon());
-    auto *l = new QVBoxLayout(&d);
+    // A tiling compositor may stretch the dialog to a whole screen: keep the content in a centered column.
+    auto *outer = new QHBoxLayout(&d);
+    outer->setContentsMargins(0, 0, 0, 0);
+    auto *card = new QWidget(&d);
+    card->setMaximumWidth(600);
+    outer->addStretch(1);
+    outer->addWidget(card, 100);
+    outer->addStretch(1);
+    auto *l = new QVBoxLayout(card);
     l->setContentsMargins(32, 32, 32, 24);
     l->setSpacing(8);
+    l->addStretch(1);   // keep the content compact and centered when a tiling compositor stretches the dialog
     auto *h = new QLabel(QObject::tr("Where should your notes live?"), &d);
-    h->setFont(ui::uiFont(20, QFont::Bold));
+    h->setProperty("hnRole", "heading");
+    h->setWordWrap(true);
+    const auto restyle = [h] {
+        h->setStyleSheet(QString("border-left: 4px solid %1; padding-left: 16px;").arg(ui::theme().accent.name()));
+    };
+    restyle();
+    QObject::connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, &d, restyle);
     l->addWidget(h);
     l->addWidget(hint(QObject::tr("Notes are plain Markdown files in a folder you control, so any sync tool or Git can manage them."), &d));
     l->addSpacing(16);
     auto *row = new QHBoxLayout;
     auto *edit = new QLineEdit(suggested, &d);
+    edit->setMinimumWidth(0);
     auto *browse = new QPushButton(QObject::tr("Browse…"), &d);
     row->addWidget(edit, 1);
     row->addWidget(browse);
     l->addLayout(row);
     l->addSpacing(16);
-    auto *box = new QDialogButtonBox(&d);
-    auto *ok = box->addButton(QObject::tr("Use this folder"), QDialogButtonBox::AcceptRole);
-    ok->setStyleSheet(ui::accentButtonStyle());
+    l->addWidget(hint(QObject::tr("Closing this dialog uses the default notes folder."), &d));
+    auto *box = new ui::ActionRow(&d);
+    auto *close = new ui::WrappingButton(QObject::tr("Close"), &d);
+    close->setObjectName("hnFirstRunClose");
+    auto *ok = new ui::WrappingButton(QObject::tr("Use this folder"), &d);
+    box->addButton(close);
+    box->addButton(ok);
+    ok->setProperty("hnRole", "primary");
     ok->setDefault(true);
     l->addWidget(box);
+    l->addStretch(1);
     QObject::connect(browse, &QPushButton::clicked, &d, [&] {
         const QString p = QFileDialog::getExistingDirectory(&d, QObject::tr("Notes folder"), edit->text());
         if (!p.isEmpty()) edit->setText(p);
     });
     QObject::connect(ok, &QPushButton::clicked, &d, &QDialog::accept);
+    QObject::connect(close, &QPushButton::clicked, &d, &QDialog::reject);
     d.setMinimumWidth(480);
     return d.exec() == QDialog::Accepted && !edit->text().trimmed().isEmpty() ? edit->text().trimmed() : QString();
 }
@@ -89,6 +138,11 @@ SettingsDialog::SettingsDialog(AppController *c, QWidget *parent) : QDialog(pare
     setAcceptDrops(true);
     auto *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
+    auto *title = new QLabel(tr("Settings"), this);
+    title->setObjectName("hnSettingsTitle");
+    title->setProperty("hnRole", "heading");
+    title->setContentsMargins(24, 16, 24, 8);
+    lay->addWidget(title);
     m_tabs = new QTabWidget(this);
     m_tabs->addTab(tabAppearance(), tr("Appearance"));
     m_tabs->addTab(tabNotes(), tr("Notes"));
@@ -98,9 +152,22 @@ SettingsDialog::SettingsDialog(AppController *c, QWidget *parent) : QDialog(pare
     m_tabs->addTab(tabKeys(), tr("Keys"));
     lay->addWidget(m_tabs);
     m_note = new QLabel(this);
-    m_note->setContentsMargins(24, 8, 24, 16);
+    m_note->setContentsMargins(24, 0, 24, 0);
     m_note->setWordWrap(true);
+    m_note->setTextFormat(Qt::PlainText);
+    m_note->hide();
     lay->addWidget(m_note);
+    auto *footer = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    footer->setContentsMargins(24, 8, 24, 16);
+    auto *closeBtn = footer->button(QDialogButtonBox::Close);
+    closeBtn->setObjectName("hnSettingsClose");
+    // The style's stock close icon is unreadable on light themes; use the themed glyph and retint on theme change.
+    auto tintClose = [closeBtn] { closeBtn->setIcon(ui::icon("close", ui::theme().text, 12)); };
+    tintClose();
+    connect(m_c, &AppController::themeChanged, closeBtn, tintClose);
+    connect(footer, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    lay->addWidget(footer);
+    connect(m_c, &AppController::themeChanged, this, &SettingsDialog::syncAppearanceFromController);
     m_loading = false;
 }
 
@@ -111,13 +178,14 @@ QWidget *SettingsDialog::tabAppearance() {
     l->addWidget(section(tr("THEME"), w));
     m_theme = new QComboBox(w);
     l->addWidget(m_theme);
-    auto *trow = new QHBoxLayout;
-    auto *imp = new QPushButton(tr("Import theme…"), w);
-    auto *exp = new QPushButton(tr("Export current theme…"), w);
-    m_removeTheme = new QPushButton(tr("Remove"), w);
-    for (auto *b : {imp, exp, m_removeTheme}) trow->addWidget(b);
-    trow->addStretch(1);
-    l->addLayout(trow);
+    auto *trow = new ui::ActionRow(w);
+    auto *imp = new ui::WrappingButton(tr("Import theme…"), w);
+    auto *exp = new ui::WrappingButton(tr("Export current theme…"), w);
+    m_removeTheme = new ui::WrappingButton(tr("Remove"), w);
+    trow->addButton(imp);
+    trow->addButton(exp);
+    trow->addButton(m_removeTheme);
+    l->addWidget(trow);
     l->addWidget(hint(tr("Import a Hyprnotes theme (.json), a base16 scheme (.yaml) or a VS Code color theme (.json), or drop the file here."), w));
     l->addSpacing(16);
     l->addWidget(section(tr("COLOR SCHEME"), w));
@@ -125,6 +193,7 @@ QWidget *SettingsDialog::tabAppearance() {
     m_scheme->addItems({tr("System"), tr("Light"), tr("Dark")});
     m_scheme->setCurrentIndex(s.colorScheme == "light" ? 1 : s.colorScheme == "dark" ? 2 : 0);
     l->addWidget(m_scheme);
+    l->addWidget(hint(tr("Choosing a bundled dark preset switches to Dark. In Light mode the dark presets use Modernist colors."), w));
     l->addSpacing(16);
     l->addWidget(section(tr("TEXT SIZE"), w));
     m_font = new QSpinBox(w);
@@ -132,6 +201,15 @@ QWidget *SettingsDialog::tabAppearance() {
     m_font->setSuffix(tr(" px"));
     m_font->setValue(m_c->theme().baseSize);
     l->addWidget(m_font);
+    auto *reset = new ui::WrappingButton(tr("Use theme text size"), w);
+    reset->setObjectName("hnThemeDefaultSize");
+    l->addWidget(reset);
+    connect(reset, &QPushButton::clicked, this, [this] {
+        auto settings = m_c->settings(); settings.fontSize = 0;
+        auto prefs = m_c->prefs(); prefs.fontSize = 0;
+        m_c->applySettings(settings, prefs);
+        syncAppearanceFromController();
+    });
     l->addSpacing(16);
     l->addWidget(section(tr("MOTION"), w));
     m_motion = new QCheckBox(tr("Reduce motion"), w);
@@ -139,7 +217,18 @@ QWidget *SettingsDialog::tabAppearance() {
     l->addWidget(m_motion);
     l->addStretch(1);
     refreshThemes(s.theme);
-    connect(m_theme, &QComboBox::currentIndexChanged, this, [this] { m_removeTheme->setEnabled(m_theme->currentIndex() > 0); apply(); });
+    connect(m_theme, &QComboBox::currentIndexChanged, this, [this] {
+        const QString id = m_theme->currentText();
+        m_removeTheme->setEnabled(!isBuiltinTheme(id));
+        // A dark-only preset shows its own palette only in Dark mode: picking one while the UI resolves to light switches to Dark.
+        const bool systemDark = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+        const bool lightNow = m_scheme->currentIndex() == 1 || (m_scheme->currentIndex() == 0 && !systemDark);
+        if (isBuiltinTheme(id) && id.compare(QStringLiteral("modernist"), Qt::CaseInsensitive) != 0 && lightNow) {
+            QSignalBlocker b(m_scheme);
+            m_scheme->setCurrentIndex(2);
+        }
+        apply();
+    });
     connect(imp, &QPushButton::clicked, this, [this] {
         const QString p = QFileDialog::getOpenFileName(this, tr("Import theme"), QString(), tr("Themes (*.json *.yaml *.yml)"));
         if (!p.isEmpty()) importThemeFile(p);
@@ -152,9 +241,9 @@ QWidget *SettingsDialog::tabAppearance() {
         if (QMessageBox::question(this, tr("Remove theme"), tr("Delete the theme \"%1\"?").arg(m_theme->currentText())) == QMessageBox::Yes) removeSelectedTheme();
     });
     connect(m_scheme, &QComboBox::currentIndexChanged, this, [this] { apply(); });
-    connect(m_font, &QSpinBox::valueChanged, this, [this] { apply(); });
+    connect(m_font, &QSpinBox::valueChanged, this, [this] { apply(true); });
     connect(m_motion, &QCheckBox::toggled, this, [this] { apply(); });
-    return w;
+    return scrollPage(w);
 }
 
 QWidget *SettingsDialog::tabNotes() {
@@ -174,20 +263,21 @@ QWidget *SettingsDialog::tabNotes() {
         const QString p = QFileDialog::getExistingDirectory(this, tr("Notes folder"), m_folder->text());
         if (!p.isEmpty()) { m_folder->setText(p); apply(); }
     });
-    return w;
+    return scrollPage(w);
 }
 
 QWidget *SettingsDialog::tabBehavior() {
     QVBoxLayout *l;
     auto *w = page(&l, this);
     l->addWidget(section(tr("TRAY"), w));
-    m_tray = new QCheckBox(tr("Keep Hyprnotes in the tray when the organizer is closed"), w);
+    m_tray = new QCheckBox(tr("Keep in tray"), w);
     m_tray->setChecked(m_c->settings().trayEnabled);
     l->addWidget(m_tray);
-    l->addWidget(hint(tr("Needs a status-notifier host such as Waybar's tray module. Without one, closing the organizer closes it normally."), w));
+    l->addWidget(hint(tr("Keep Hyprnotes in the tray when the organizer is closed. Needs a status-notifier host such as Waybar's tray module. Without one, closing the organizer closes it normally."), w));
     l->addSpacing(16);
     l->addWidget(section(tr("STARTUP"), w));
-    m_autostart = new QCheckBox(tr("Start in the background at login"), w);
+    m_autostart = new QCheckBox(tr("Start at login"), w);
+    l->addWidget(hint(tr("Start Hyprnotes in the background when you log in."), w));
     hn::platform::Autostart as;
     const auto st = as.state();
     m_autostart->setChecked(st != hn::platform::Autostart::State::Off);
@@ -203,22 +293,24 @@ QWidget *SettingsDialog::tabBehavior() {
         hn::platform::Autostart a;
         const auto r = on ? a.enable() : a.disable();
         if (!r.ok) {
-            m_note->setText(r.message);
+            showNote(r.message);
             QSignalBlocker b(m_autostart);
             m_autostart->setChecked(!on);
-        } else m_note->clear();
+        } else showNote({});
     });
-    return w;
+    return scrollPage(w);
 }
 
 QWidget *SettingsDialog::tabKeys() {
     QVBoxLayout *l;
     auto *w = page(&l, this);
-    l->addWidget(section(tr("KEYBINDINGS"), w));
+    l->setContentsMargins(16, 8, 16, 8);
     m_keys = new QTableWidget(0, 2, w);
+    m_keys->installEventFilter(this);
     m_keys->setHorizontalHeaderLabels({tr("Action"), tr("Shortcut")});
     m_keys->verticalHeader()->hide();
-    m_keys->horizontalHeader()->setStretchLastSection(true);
+    m_keys->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    connect(m_keys->horizontalHeader(), &QHeaderView::sectionResized, this, [this] { resizeKeyRows(); });
     m_keys->setSelectionMode(QAbstractItemView::NoSelection);
     const auto kb = m_c->settings().keybindings;
     auto addRow = [&](const QString &id, const QString &label, const QKeySequence &ks, const QString &pluginDefault) {
@@ -232,6 +324,7 @@ QWidget *SettingsDialog::tabKeys() {
         m_keys->setItem(r, 0, name);
         auto *ed = new QKeySequenceEdit(ks, m_keys);   // few fixed rows: acceptable, unlike the note list
         ed->setMaximumSequenceLength(1);
+        ed->installEventFilter(this);
         m_keys->setCellWidget(r, 1, ed);
         connect(ed, &QKeySequenceEdit::editingFinished, this, [this] { apply(); });
     };
@@ -241,7 +334,7 @@ QWidget *SettingsDialog::tabKeys() {
         for (const auto &a : m_c->plugins().commands())
             addRow(QStringLiteral("plugin:") + a.qid, tr("Plugin: %1: %2").arg(a.pluginName, a.title), pk.value(QStringLiteral("plugin:") + a.qid), a.key);
     }
-    m_keys->setColumnWidth(0, 220);
+    resizeKeyRows();
     l->addWidget(m_keys, 1);
     l->addWidget(hint(tr("Clear a field to unbind the action."), w));
     return w;
@@ -253,33 +346,65 @@ void SettingsDialog::refreshThemes(const QString &select) {
     m_theme->addItems(hn::theme::listThemes());
     const int i = m_theme->findText(select);
     m_theme->setCurrentIndex(i < 0 ? 0 : i);
-    m_removeTheme->setEnabled(m_theme->currentIndex() > 0);
+    m_removeTheme->setEnabled(!isBuiltinTheme(m_theme->currentText()));
+}
+
+void SettingsDialog::syncAppearanceFromController() {
+    const QSignalBlocker fontBlock(m_font), schemeBlock(m_scheme), motionBlock(m_motion);
+    const auto settings = m_c->settings();
+    m_font->setValue(m_c->theme().baseSize);
+    m_scheme->setCurrentIndex(settings.colorScheme == "light" ? 1 : settings.colorScheme == "dark" ? 2 : 0);
+    m_motion->setChecked(settings.reduceMotion);
+    refreshThemes(settings.theme);
+}
+
+void SettingsDialog::resizeKeyRows() {
+    m_keys->resizeRowsToContents();
+    for (int r = 0; r < m_keys->rowCount(); ++r)
+        if (auto *editor = m_keys->cellWidget(r, 1))
+            m_keys->setRowHeight(r, qMax(m_keys->rowHeight(r), editor->sizeHint().height() + 2));
+}
+
+bool SettingsDialog::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange || event->type() == QEvent::Show) {
+        // Theme notification precedes sliced QSS/font polish. Measure after the editors receive it.
+        if (!m_keysResizePending) {
+            m_keysResizePending = true;
+            QTimer::singleShot(0, this, [this] { m_keysResizePending = false; resizeKeyRows(); });
+        }
+    }
+    return QDialog::eventFilter(watched, event);
 }
 
 QString SettingsDialog::note() const { return m_note->text(); }
 
+void SettingsDialog::showNote(const QString &message) {
+    m_note->setText(message);
+    m_note->setVisible(!message.isEmpty());
+}
+
 bool SettingsDialog::importThemeFile(const QString &path) {
     QString msg;
     const bool ok = m_c->importThemeFile(path, &msg);
-    refreshThemes(m_c->settings().theme);
-    m_note->setText(msg);
+    syncAppearanceFromController();
+    showNote(msg);
     return ok;
 }
 
 bool SettingsDialog::exportThemeTo(const QString &path) {
     QString err;
     const bool ok = hn::theme::exportTheme(m_theme->currentText(), path, &err);
-    m_note->setText(ok ? tr("Exported \"%1\" to %2.").arg(m_theme->currentText(), path) : tr("Export failed: %1").arg(err));
+    showNote(ok ? tr("Exported \"%1\" to %2.").arg(m_theme->currentText(), path) : tr("Export failed: %1").arg(err));
     return ok;
 }
 
 bool SettingsDialog::removeSelectedTheme() {
     const QString name = m_theme->currentText();
     QString err;
-    if (!hn::theme::removeTheme(name, &err)) { m_note->setText(tr("Could not remove: %1").arg(err)); return false; }
+    if (!hn::theme::removeTheme(name, &err)) { showNote(tr("Could not remove: %1").arg(err)); return false; }
     refreshThemes("modernist");   // blocked signals: apply the fallback explicitly
     apply();
-    m_note->setText(tr("Removed theme \"%1\".").arg(name));
+    showNote(tr("Removed theme \"%1\".").arg(name));
     return true;
 }
 
@@ -298,7 +423,7 @@ void SettingsDialog::dropEvent(QDropEvent *e) {
     }
 }
 
-void SettingsDialog::apply() {
+void SettingsDialog::apply(bool fontEdited) {
     if (m_loading) return;
     Settings s = m_c->settings();
     s.theme = m_theme->currentText().isEmpty() ? s.theme : m_theme->currentText();
@@ -317,9 +442,8 @@ void SettingsDialog::apply() {
         s.keybindings[id] = ks;
     }
     AppPrefs p = m_c->prefs();
-    if (m_font->value() != m_c->theme().baseSize) p.fontSize = m_font->value();
+    if (fontEdited) s.fontSize = p.fontSize = m_font->value();
     m_c->applySettings(s, p);
-    m_note->clear();
 }
 
 } // namespace hn::app

@@ -6,6 +6,7 @@
 #include <QWidget>
 
 class QPushButton;
+class QScrollArea;
 
 namespace hn::app {
 
@@ -27,7 +28,14 @@ public:
     void refresh();
 protected:
     void paintEvent(QPaintEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
+    bool eventFilter(QObject *, QEvent *) override;
 private:
+    void relayout();
+    int layoutContent(int width);
+    QScrollArea *m_scroll;
+    QWidget *m_content;
+    bool m_layoutBusy = false;
     AppController *m_c;
     QPointer<NoteSession> m_s;
     QList<QMetaObject::Connection> m_conns;

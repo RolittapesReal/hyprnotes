@@ -31,6 +31,7 @@ PluginService::PluginService(AppController *c, QString dir, PluginHooks hooks) :
 
 PluginService::~PluginService() {
     for (auto *b : std::as_const(m_bridges)) { b->detach(); delete b; }
+    qDeleteAll(m_retiredBridges);
     m_mgr.reset();   // before the bridges it points at
     quiesce();
 }
@@ -113,6 +114,7 @@ void PluginService::create() {
     cfg.logger = [](int, const QString &id, const QString &msg) { qWarning("[plugin %s] %s", qPrintable(id), qPrintable(msg)); };
     cfg.native = m_native.get();
     m_mgr = std::make_unique<PluginManager>(cfg);
+    connect(m_mgr->host(), &LuaPluginHost::callbackFinished, this, &PluginService::collectRetiredBridges);
     migrateLegacyMods();
     m_mgr->scan();
     auto rebuild = [this] {
@@ -186,10 +188,19 @@ void PluginService::release(NoteSession *s) {
     if (auto *b = m_bridges.take(s)) {
         m_mgr->detachNote(b);   // flushes coalesced events that still reference it
         b->detach();
-        delete b;
+        if (m_mgr->host()->usesNote(b)) m_retiredBridges.append(b);
+        else delete b;
     }
     for (const auto &c : m_conns.take(s)) disconnect(c);
     s->setPreSaveHook({});
+}
+
+void PluginService::collectRetiredBridges() {
+    for (auto it = m_retiredBridges.begin(); it != m_retiredBridges.end();) {
+        if (m_mgr->host()->usesNote(*it)) { ++it; continue; }
+        delete *it;
+        it = m_retiredBridges.erase(it);
+    }
 }
 
 void PluginService::refreshSessions() {
@@ -236,11 +247,19 @@ bool PluginService::renderPanel(const QString &qid, NoteSession *s) {
     return ok;
 }
 
-void PluginService::panelClick(const QString &qid, int token, NoteSession *s) {
+void PluginService::requestPanelRefresh(const QString &qid, NoteSession *s) {
     if (!m_mgr) return;
     const int c = int(qid.indexOf(QLatin1Char(':')));
+    if (c <= 0) return;
+    m_mgr->requestPanelRefresh(qid.left(c), qid.mid(c + 1), s ? bridgeFor(s) : nullptr);
+}
+
+void PluginService::panelClick(const QString &qid, int token, NoteSession *s) {
+    if (!m_mgr) return;
+    const QString panel = qid; // a callback may destroy the originating dock
+    const int c = int(panel.indexOf(QLatin1Char(':')));
     QString err;
-    if (!m_mgr->panelClick(qid.left(c), qid.mid(c + 1), token, s ? bridgeFor(s) : nullptr, &err) && !err.isEmpty()) m_c->announce(tr("%1: %2").arg(nameOf(qid.left(c)), err));
+    if (!m_mgr->panelClick(panel.left(c), panel.mid(c + 1), token, s ? bridgeFor(s) : nullptr, &err) && !err.isEmpty()) m_c->announce(tr("%1: %2").arg(nameOf(panel.left(c)), err));
     m_mgr->flushPanels();   // a click that called hn.panel_refresh is answered now, not after the coalescing delay
 }
 

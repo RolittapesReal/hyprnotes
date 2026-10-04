@@ -26,6 +26,7 @@
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
@@ -164,7 +165,7 @@ void AppController::applyThemeNow() {
     for (const auto &tokens : std::as_const(m_themeOverrides))
         for (auto it = tokens.begin(); it != tokens.end(); ++it) applyThemeToken(m_theme, it.key(), QColor(it.value()));
     ui::setTheme(m_theme);
-    ui::animation().reduceMotion = m_settings.reduceMotion;
+    ui::setReducedMotion(m_settings.reduceMotion);
     hn::theme::applyTheme(m_theme);
     // D10: re-theming a session re-formats its whole document; do it in time-boxed slices, shown notes first.
     m_themeQueue.clear();
@@ -786,9 +787,14 @@ void AppController::showNoteContextMenu(const QString &rel, const QPoint &global
 
 bool AppController::ask(const QString &title, const QString &text) {
     if (m_opt.confirm) return m_opt.confirm(title, text);
-    QMessageBox box(QMessageBox::Warning, title, text, QMessageBox::NoButton, m_organizer.data());
+    QMessageBox box(QMessageBox::Warning, title, title, QMessageBox::NoButton, m_organizer.data());
+    box.setTextFormat(Qt::PlainText);
+    box.setInformativeText(text);
+    if (auto *heading = box.findChild<QLabel *>("qt_msgbox_label")) heading->setProperty("hnRole", "heading");
     auto *yes = box.addButton(tr("Continue"), QMessageBox::DestructiveRole);
-    box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+    auto *cancel = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+    box.setDefaultButton(cancel);
+    box.setEscapeButton(cancel);
     box.exec();
     return box.clickedButton() == yes;
 }
@@ -803,11 +809,18 @@ void AppController::offerRecovery() {
     if (m_opt.recoveryPrompt) choice = m_opt.recoveryPrompt(drafts);
     else {
         QMessageBox box(QMessageBox::Question, tr("Recover unsaved changes?"),
-                        tr("Hyprnotes found unsaved changes from a previous session in %n note(s).", "", drafts.size()),
+                        tr("Recover unsaved changes?"),
                         QMessageBox::NoButton, nullptr);
+        box.setObjectName("hnRecoveryDialog");
+        box.setTextFormat(Qt::PlainText);
+        box.setInformativeText(tr("Hyprnotes found unsaved changes from a previous session in %n note(s).", "", drafts.size()));
+        if (auto *heading = box.findChild<QLabel *>("qt_msgbox_label")) heading->setProperty("hnRole", "heading");
         auto *restore = box.addButton(tr("Restore"), QMessageBox::AcceptRole);
+        restore->setProperty("hnRole", "primary");
         auto *discard = box.addButton(tr("Discard"), QMessageBox::DestructiveRole);
-        box.addButton(tr("Later"), QMessageBox::RejectRole);
+        auto *later = box.addButton(tr("Later"), QMessageBox::RejectRole);
+        box.setDefaultButton(later);
+        box.setEscapeButton(later);
         box.exec();
         choice = box.clickedButton() == restore ? RecoveryChoice::Restore : box.clickedButton() == discard ? RecoveryChoice::Discard : RecoveryChoice::Later;
     }

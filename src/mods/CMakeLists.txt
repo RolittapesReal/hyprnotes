@@ -6,7 +6,7 @@ target_link_libraries(hn_mods PUBLIC Qt6::Core ${CMAKE_DL_LIBS})
 # Separately configured+built example mod (its own CMake project).
 set(HN_EX_BIN ${CMAKE_BINARY_DIR}/example-uppercase-selection)
 add_custom_target(hn_example_uppercase_selection ALL
-  COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/examples/mods/uppercase-selection -B ${HN_EX_BIN} -DCMAKE_BUILD_TYPE=Release -G Ninja
+  COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/examples/mods/uppercase-selection -B ${HN_EX_BIN} -DCMAKE_BUILD_TYPE=Release -G "${CMAKE_GENERATOR}"
   COMMAND ${CMAKE_COMMAND} --build ${HN_EX_BIN}
   COMMENT "Building example mod uppercase-selection")
 

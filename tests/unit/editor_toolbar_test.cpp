@@ -134,7 +134,7 @@ private slots:
             QVERIFY2(!b->toolTip().isEmpty(), qPrintable(b->objectName()));
             QVERIFY2(!b->accessibleName().isEmpty(), qPrintable(b->objectName()));
             QVERIFY2(!b->icon().isNull(), qPrintable(b->objectName()));
-            QCOMPARE(b->focusPolicy(), Qt::NoFocus);
+            QCOMPARE(b->focusPolicy(), Qt::TabFocus);
         }
         QVERIFY(f.btn("bold")->toolTip().contains(QStringLiteral("Ctrl+B")));
         QCOMPARE(f.btn("bold")->accessibleName(), QStringLiteral("Bold"));

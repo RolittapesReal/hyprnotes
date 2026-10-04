@@ -937,12 +937,12 @@ hn.command{ id = "steal", title = "Steal", key = "Ctrl+B", run = function() end 
         QVERIFY(d.hashLabel()->textInteractionFlags() & Qt::TextSelectableByMouse);
         QCOMPARE(d.findChild<QLabel *>("hnConsentSource")->text(), r.source);
         QCOMPARE(d.permissionLabels().size(), 3);
-        const QString danger = ui::theme().danger.name();
         for (auto *lab : d.permissionLabels()) {
             const QString p = lab->property("permission").toString();
             QVERIFY(lab->text().startsWith(p));
             QVERIFY(lab->text().contains(hn::plugins::permissionDescription(p)));
-            QCOMPARE(lab->styleSheet().contains(danger), hn::plugins::isDangerousPermission(p));   // dangerous ones in the danger colour
+            QTRY_COMPARE(lab->palette().color(QPalette::WindowText),
+                         hn::plugins::isDangerousPermission(p) ? ui::theme().danger : ui::theme().text);
             QVERIFY(!lab->accessibleName().isEmpty());
         }
         QCOMPARE(d.approveButton()->text(), QString("I trust this plugin - Enable"));

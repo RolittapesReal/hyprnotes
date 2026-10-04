@@ -9,6 +9,7 @@ class QLabel;
 class QListWidget;
 class QPushButton;
 class QVBoxLayout;
+class QBoxLayout;
 
 namespace hn::app {
 
@@ -33,11 +34,19 @@ public:
     static QString chipFor(hn::plugins::Status s);
 protected:
     void showEvent(QShowEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
+    bool eventFilter(QObject *, QEvent *) override;
 private:
     void rebuildDetail();
+    void restyle();
+    void arrange();
+    void updateChips();
     void say(const QString &m);
     AppController *m_c;
     QLabel *m_warning, *m_note;
+    QLabel *m_warningIcon, *m_chips = nullptr;
+    QWidget *m_warningFrame;
+    QBoxLayout *m_row;
     QListWidget *m_list;
     QWidget *m_detail;
     QVBoxLayout *m_detailLay;
@@ -46,6 +55,8 @@ private:
     QList<QWidget *> m_settingEditors;
     QString m_sel;
     bool m_loaded = false;
+    bool m_native = false;
+    QString m_chip;
 };
 
 } // namespace hn::app

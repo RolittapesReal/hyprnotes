@@ -1,7 +1,8 @@
 #include "consent_dialog.h"
+#include "action_row.h"
 #include "ui_common.h"
-#include <QDialogButtonBox>
-#include <QFontDatabase>
+#include <QApplication>
+#include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -9,7 +10,10 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScreen>
+#include <QScopedValueRollback>
 #include <QVBoxLayout>
+#include <QWindow>
 #include <algorithm>
 
 namespace hn::app {
@@ -24,7 +28,9 @@ QColor readableOn(const QColor &bg) {
 QLabel *wrapped(const QString &text, QWidget *p) {
     auto *l = new QLabel(text, p);
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    l->setTextFormat(Qt::PlainText);
+    l->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    l->setFocusPolicy(Qt::TabFocus);
     return l;
 }
 }  // namespace
@@ -55,110 +61,126 @@ QString ConsentDialog::nativeWarningText() { return QObject::tr("This plugin run
 QString ConsentDialog::approveText() { return QObject::tr("I trust this plugin - Enable"); }
 
 ConsentDialog::ConsentDialog(const ConsentRequest &r, QWidget *parent, int delayMs) : QDialog(parent) {
-    const auto &t = ui::theme();
     setObjectName("hnConsent");
     setWindowTitle(tr("Review plugin"));
     setWindowIcon(ui::appIcon());
     setModal(true);
-    setFixedWidth(600);
+    setMinimumWidth(520);
+    resize(600, 720);
     auto *root = new QVBoxLayout(this);
+    // Screen bounds, not unbounded label hints, govern the top-level window.
+    root->setSizeConstraint(QLayout::SetNoConstraint);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
     // ---- header band
     auto *head = new QWidget(this);
+    m_head = head;
     head->setObjectName("hnConsentHead");
-    head->setStyleSheet(QString("QWidget#hnConsentHead { background: %1; border-bottom: 1px solid %2; border-left: 6px solid %3; }").arg(t.surface.name(), t.border.name(), t.accent.name()));
     auto *hl = new QVBoxLayout(head);
-    hl->setContentsMargins(24, 16, 24, 16);
+    hl->setContentsMargins(16, 8, 16, 8);
     hl->setSpacing(2);
-    auto *kicker = new QLabel(r.reconsentReason.isEmpty() ? tr("REVIEW PLUGIN BEFORE ENABLING") : tr("APPROVE AGAIN"), head);
-    kicker->setFont(ui::labelFont(10));
-    kicker->setStyleSheet(QString("color: %1; background: transparent;").arg(t.muted.name()));
+    auto *kicker = new QLabel(r.reconsentReason.isEmpty() ? tr("Review plugin") : tr("Review plugin again"), head);
+    kicker->setProperty("hnRole", "heading");
+    kicker->setWordWrap(true);
     auto *name = new QLabel(r.name, head);
-    name->setFont(ui::uiFont(22, QFont::Bold));
-    name->setStyleSheet("background: transparent;");
+    name->setProperty("hnRole", "heading");
+    name->setTextFormat(Qt::PlainText);
     name->setWordWrap(true);
+    name->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    name->setFocusPolicy(Qt::TabFocus);
     auto *by = new QLabel(tr("Version %1 by %2").arg(r.version, r.author), head);
-    by->setStyleSheet(QString("color: %1; background: transparent;").arg(t.muted.name()));
-    by->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    by->setProperty("hnRole", "hint");
+    by->setTextFormat(Qt::PlainText);
+    by->setWordWrap(true);
+    by->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    by->setFocusPolicy(Qt::TabFocus);
     hl->addWidget(kicker);
-    hl->addWidget(name);
-    hl->addWidget(by);
     root->addWidget(head);
 
     auto *body = new QWidget(this);
     auto *bl = new QVBoxLayout(body);
-    bl->setContentsMargins(24, 16, 24, 8);
+    bl->setContentsMargins(16, 8, 16, 8);
     bl->setSpacing(8);
 
     // ---- permanent warning panel (never collapsible, never scrolled away)
     m_warn = new QFrame(body);
     m_warn->setObjectName("hnConsentWarning");
-    m_warn->setStyleSheet(QString("QFrame#hnConsentWarning { background: %1; border: 2px solid %2; border-left: 8px solid %2; }").arg(t.surface.name(), t.danger.name()));
-    auto *wl = new QHBoxLayout(m_warn);
-    wl->setContentsMargins(12, 12, 16, 12);
-    wl->setSpacing(12);
+    auto *wl = new QVBoxLayout(m_warn);
+    wl->setContentsMargins(12, 8, 12, 8);
+    wl->setSpacing(4);
     auto *wi = new QLabel(m_warn);
-    wi->setPixmap(warningIcon(t.danger, 24).pixmap(24, 24));
+    m_warningIcon = wi;
     wi->setAlignment(Qt::AlignTop);
     wi->setStyleSheet("background: transparent; border: none;");
-    auto *wt = new QVBoxLayout;
-    wt->setSpacing(4);
+    auto *warningHeading = new QHBoxLayout;
+    warningHeading->setSpacing(8);
     auto *wh = new QLabel(tr("SECURITY WARNING"), m_warn);
-    wh->setFont(ui::labelFont(10));
-    wh->setStyleSheet(QString("color: %1; background: transparent; border: none;").arg(t.danger.name()));
+    wh->setProperty("hnRole", "danger");
+    wh->setWordWrap(true);
     auto *wtext = wrapped(warningText(), m_warn);
     wtext->setObjectName("hnConsentWarningText");
-    wtext->setStyleSheet("background: transparent; border: none;");
-    wtext->setFont(ui::uiFont(13, QFont::DemiBold));
-    wt->addWidget(wh);
-    wt->addWidget(wtext);
-    wl->addWidget(wi);
-    wl->addLayout(wt, 1);
+    wtext->setStyleSheet("background: transparent; border: none; font-weight: 600;");
+    warningHeading->addWidget(wi);
+    warningHeading->addWidget(wh, 1);
+    wl->addLayout(warningHeading);
+    wl->addWidget(wtext);
     bl->addWidget(m_warn);
 
+    m_details = new QScrollArea(body);
+    m_details->setObjectName("hnConsentDetails");
+    m_details->setAccessibleName(tr("Plugin details and permissions"));
+    m_details->setWidgetResizable(true);
+    m_details->setFrameShape(QFrame::NoFrame);
+    m_details->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_details->setFocusPolicy(Qt::StrongFocus);
+    auto *detail = new QWidget;
+    auto *dl = new QVBoxLayout(detail);
+    dl->setContentsMargins(8, 8, 8, 8);
+    dl->setSpacing(8);
+    m_details->setWidget(detail);
+    bl->addWidget(m_details, 1);
+
     if (r.native) {   // solid danger fill: the loudest element of the dialog
-        m_native = new QFrame(body);
+        m_native = new QFrame(detail);
         m_native->setObjectName("hnConsentNative");
-        const QColor fg = readableOn(t.danger);
-        m_native->setStyleSheet(QString("QFrame#hnConsentNative { background: %1; border: none; }").arg(t.danger.name()));
         auto *nl = new QHBoxLayout(m_native);
         nl->setContentsMargins(12, 10, 16, 10);
         nl->setSpacing(12);
         auto *ni = new QLabel(m_native);
-        ni->setPixmap(warningIcon(fg, 20).pixmap(20, 20));
+        m_nativeIcon = ni;
         ni->setStyleSheet("background: transparent;");
         auto *ntext = wrapped(nativeWarningText(), m_native);
+        m_nativeText = ntext;
         ntext->setObjectName("hnConsentNativeText");
-        ntext->setFont(ui::uiFont(13, QFont::Bold));
-        ntext->setStyleSheet(QString("color: %1; background: transparent;").arg(fg.name()));
         nl->addWidget(ni, 0, Qt::AlignTop);
         nl->addWidget(ntext, 1);
-        bl->addWidget(m_native);
+        dl->addWidget(m_native);
     }
 
     if (!r.reconsentReason.isEmpty()) {
-        auto *rc = wrapped(r.reconsentReason + (r.newPermissions.isEmpty() ? QString() : tr(" New permissions: %1.").arg(r.newPermissions.join(", "))), body);
+        auto *rc = wrapped(r.reconsentReason + (r.newPermissions.isEmpty() ? QString() : tr(" New permissions: %1.").arg(r.newPermissions.join(", "))), detail);
         rc->setObjectName("hnConsentReason");
-        rc->setStyleSheet(QString("background: transparent; color: %1; font-weight: 600;").arg(t.accent.name()));
-        bl->addWidget(rc);
+        rc->setProperty("hnRole", "accent");
+        dl->addWidget(rc);
     }
+    dl->addWidget(name);
+    dl->addWidget(by);
 
     // ---- identity: source and SHA-256 (selectable)
-    auto *grid = new QWidget(body);
+    auto *grid = new QWidget(detail);
     auto *gl = new QVBoxLayout(grid);
     gl->setContentsMargins(0, 8, 0, 0);
     gl->setSpacing(4);
     auto field = [&](const QString &label, const QString &value, bool mono) {
         auto *l = new QLabel(label, grid);
-        l->setFont(ui::labelFont(9));
-        l->setStyleSheet(QString("color: %1;").arg(t.muted.name()));
+        l->setProperty("hnRole", "section");
+        l->setWordWrap(true);
         auto *v = wrapped(value, grid);
         v->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
         v->setFocusPolicy(Qt::TabFocus);
         v->setAccessibleName(label);
-        if (mono) { QFont f = QFontDatabase::systemFont(QFontDatabase::FixedFont); f.setPixelSize(12); v->setFont(f); v->setWordWrap(true); }
+        if (mono) v->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         gl->addWidget(l);
         gl->addWidget(v);
         return v;
@@ -172,85 +194,78 @@ ConsentDialog::ConsentDialog(const ConsentRequest &r, QWidget *parent, int delay
     src->setObjectName("hnConsentSource");
     m_hash = field(tr("SHA-256 OF THE PACKAGE"), r.sha256, true);
     m_hash->setObjectName("hnConsentHash");
-    bl->addWidget(grid);
+    dl->addWidget(grid);
 
     // ---- permissions
-    auto *ph = new QLabel(r.permissions.isEmpty() ? tr("PERMISSIONS: NONE REQUESTED") : tr("THIS PLUGIN REQUESTS"), body);
-    ph->setFont(ui::labelFont(10));
-    ph->setStyleSheet(QString("color: %1; margin-top: 8px;").arg(t.muted.name()));
-    bl->addWidget(ph);
-    auto *pw = new QWidget;
+    auto *ph = new QLabel(r.permissions.isEmpty() ? tr("PERMISSIONS: NONE REQUESTED") : tr("THIS PLUGIN REQUESTS"), detail);
+    ph->setProperty("hnRole", "section");
+    ph->setWordWrap(true);
+    dl->addWidget(ph);
+    auto *pw = new QWidget(detail);
     auto *pl = new QVBoxLayout(pw);
     pl->setContentsMargins(0, 0, 0, 0);
     pl->setSpacing(0);
-    QStringList ordered = r.permissions;   // dangerous permissions first: they are never hidden below the fold
+    QStringList ordered = r.permissions;   // retain dangerous-first ordering in the scrolling review
     std::stable_partition(ordered.begin(), ordered.end(), [](const QString &p) { return hn::plugins::isDangerousPermission(p); });
     for (const QString &p : std::as_const(ordered)) {
         const bool danger = hn::plugins::isDangerousPermission(p);
         auto *row = new QWidget(pw);
         row->setObjectName(danger ? "hnPermDanger" : "hnPermRow");
-        row->setStyleSheet(QString("QWidget#%1 { border-top: 1px solid %2; %3 }").arg(row->objectName(), t.border.name(), danger ? QString("background: %1;").arg(t.surface.name()) : QString()));
         auto *rl = new QHBoxLayout(row);
         rl->setContentsMargins(8, 8, 8, 8);
         rl->setSpacing(12);
         auto *ic = new QLabel(row);
-        ic->setFixedSize(20, 20);
-        if (danger) ic->setPixmap(warningIcon(t.danger, 18).pixmap(18, 18));
-        else { QPixmap pm(20, 20); pm.fill(Qt::transparent); QPainter pp(&pm); pp.fillRect(7, 7, 6, 6, t.muted); ic->setPixmap(pm); }
+        m_permIcons << ic;
         ic->setStyleSheet("background: transparent;");
         auto *label = new QLabel(row);
         label->setObjectName("hnPermLabel");
         label->setWordWrap(true);
         label->setTextFormat(Qt::PlainText);
         label->setText(QString("%1  %2").arg(p, hn::plugins::permissionDescription(p)));
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+        label->setFocusPolicy(Qt::TabFocus);
         label->setProperty("permission", p);
         label->setAccessibleName(tr("%1 permission%2: %3").arg(p, danger ? tr(" (dangerous)") : QString(), hn::plugins::permissionDescription(p)));
-        label->setStyleSheet(danger ? QString("color: %1; font-weight: 700; background: transparent;").arg(t.danger.name()) : "background: transparent;");
+        if (danger) label->setProperty("hnRole", "danger");
         rl->addWidget(ic, 0, Qt::AlignTop);
         rl->addWidget(label, 1);
         m_perms << label;
         pl->addWidget(row);
     }
-    auto *scroll = new QScrollArea(body);
-    scroll->setWidget(pw);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setMinimumHeight(qMin(5, qMax(1, int(r.permissions.size()))) * 38);
-    scroll->setMaximumHeight(6 * 38 + 4);   // more than six rows scroll; dangerous ones are listed first
-    scroll->setStyleSheet("QScrollArea { background: transparent; } QScrollArea > QWidget > QWidget { background: transparent; }");
-    if (!r.permissions.isEmpty()) bl->addWidget(scroll);
+    dl->addWidget(pw);
+    dl->addStretch(1);
     root->addWidget(body, 1);
 
     // ---- buttons
     auto *bar = new QWidget(this);
+    m_bar = bar;
     bar->setObjectName("hnConsentBar");
-    bar->setStyleSheet(QString("QWidget#hnConsentBar { border-top: 1px solid %1; }").arg(t.border.name()));
-    auto *bh = new QHBoxLayout(bar);
-    bh->setContentsMargins(24, 16, 24, 16);
+    auto *bh = new QVBoxLayout(bar);
+    bh->setContentsMargins(16, 8, 16, 16);
     bh->setSpacing(8);
     m_wait = new QLabel(bar);
-    m_wait->setStyleSheet(QString("color: %1;").arg(t.muted.name()));
-    m_cancel = new QPushButton(tr("Cancel"), bar);
+    m_wait->setProperty("hnRole", "hint");
+    m_wait->setWordWrap(true);
+    m_cancel = new ui::WrappingButton(tr("Cancel"), bar);
     m_cancel->setObjectName("hnConsentCancel");
     m_cancel->setDefault(true);
     m_cancel->setAutoDefault(true);
     m_cancel->setMinimumHeight(40);
     m_cancel->setAccessibleName(tr("Cancel, do not enable this plugin"));
-    m_approve = new QPushButton(approveText(), bar);
+    m_approve = new ui::WrappingButton(approveText(), bar);
     m_approve->setObjectName("hnConsentApprove");
     m_approve->setAutoDefault(false);
     m_approve->setMinimumHeight(40);
     m_approve->setAccessibleName(tr("I trust this plugin, enable it"));
     m_approve->setAccessibleDescription(tr("Available two seconds after this dialog opens"));
-    m_approve->setStyleSheet(QString("QPushButton { background: %1; color: %2; border: 2px solid %1; padding: 0 16px; font-weight: 700; }"
-                                     "QPushButton:hover { background: %3; color: %4; border-color: %3; }"
-                                     "QPushButton:focus { border: 2px solid %3; }"
-                                     "QPushButton:disabled { background: transparent; color: %5; border: 2px solid %6; }")
-                                 .arg(t.accent.name(), t.accentText.name(), t.text.name(), t.bg.name(), t.muted.name(), t.border.name()));
-    bh->addWidget(m_wait, 1);
-    bh->addWidget(m_cancel);
-    bh->addWidget(m_approve);
+    m_approve->setProperty("hnRole", "primary");
+    bh->addWidget(m_wait);
+    // Both labels wrap within one footer row, reserving space for the warning.
+    auto *actions = new QHBoxLayout;
+    actions->setSpacing(8);
+    actions->addWidget(m_cancel);
+    actions->addWidget(m_approve, 1);
+    bh->addLayout(actions);
     root->addWidget(bar);
     setTabOrder(m_cancel, m_approve);
 
@@ -264,18 +279,88 @@ ConsentDialog::ConsentDialog(const ConsentRequest &r, QWidget *parent, int delay
         connect(&m_timer, &QTimer::timeout, this, [this] { m_approve->setEnabled(true); m_wait->clear(); });
         m_timer.start();   // started when the dialog is created; it is shown immediately by run()
     }
-    // Word-wrapped labels need height-for-width: size the dialog for its fixed width so the warning can never be clipped.
-    layout()->activate();
-    const int h = layout()->totalHeightForWidth(600);
-    setMinimumHeight(h);
-    resize(600, h);
+    connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, this, &ConsentDialog::restyle);
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget *, QWidget *now) {
+        if (now && m_details->widget()->isAncestorOf(now)) m_details->ensureWidgetVisible(now, 0, 0);
+    });
+    restyle();
+    m_layoutReady = true;
+    updateBounds();
     m_cancel->setFocus();
+}
+
+void ConsentDialog::restyle() {
+    const auto &t = ui::theme();
+    m_head->setStyleSheet(QString("QWidget#hnConsentHead { background: %1; border-bottom: 1px solid %2; border-left: 6px solid %3; }").arg(t.surface.name(), t.border.name(), t.accent.name()));
+    m_warn->setStyleSheet(QString("QFrame#hnConsentWarning { background: %1; border: 1px solid %2; border-left: 8px solid %2; }").arg(t.surface.name(), t.danger.name()));
+    const int px = qMax(24, t.baseSize);
+    m_warningIcon->setPixmap(warningIcon(t.danger, px).pixmap(px, px));
+    if (m_native) {
+        const QColor fg = readableOn(t.danger);
+        m_native->setStyleSheet(QString("QFrame#hnConsentNative { background: %1; border: none; }").arg(t.danger.name()));
+        m_nativeIcon->setPixmap(warningIcon(fg, px).pixmap(px, px));
+        m_nativeText->setStyleSheet(QString("color: %1; background: transparent; font-weight: bold;").arg(fg.name()));
+    }
+    for (int i = 0; i < m_perms.size(); ++i) {
+        auto *label = m_perms[i];
+        const bool danger = hn::plugins::isDangerousPermission(label->property("permission").toString());
+        auto *row = label->parentWidget();
+        row->setStyleSheet(QString("QWidget#%1 { border-top: 1px solid %2; %3 }").arg(row->objectName(), t.border.name(), danger ? QString("background: %1;").arg(t.surface.name()) : QString()));
+        auto *icon = m_permIcons[i];
+        icon->setFixedSize(px, px);
+        if (danger) icon->setPixmap(warningIcon(t.danger, px).pixmap(px, px));
+        else {
+            QPixmap pm(px, px); pm.fill(Qt::transparent);
+            QPainter painter(&pm); painter.fillRect(px / 3, px / 3, px / 3, px / 3, t.muted); painter.end();
+            icon->setPixmap(pm);
+        }
+    }
+    QFont mono(t.monoFamily.isEmpty() ? QStringLiteral("monospace") : t.monoFamily);
+    mono.setPixelSize(t.baseSize);
+    m_hash->setFont(mono);
+    m_bar->setStyleSheet(QString("QWidget#hnConsentBar { border-top: 1px solid %1; }").arg(t.border.name()));
 }
 
 void ConsentDialog::showEvent(QShowEvent *e) {
     QDialog::showEvent(e);
     if (!m_approve->isEnabled()) m_timer.start();
     m_cancel->setFocus();
+}
+
+bool ConsentDialog::event(QEvent *event) {
+    const bool handled = QDialog::event(event);
+    if (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize || event->type() == QEvent::Show
+        || event->type() == QEvent::ScreenChangeInternal)
+        updateBounds();
+    return handled;
+}
+
+void ConsentDialog::updateBounds() {
+    if (!m_layoutReady || m_updatingBounds || !screen()) return;
+    const QScopedValueRollback<bool> updating(m_updatingBounds, true);
+    if (m_screen != screen()) {
+        disconnect(m_screenGeometryConnection);
+        m_screen = screen();
+        m_screenGeometryConnection = connect(screen(), &QScreen::availableGeometryChanged, this, &ConsentDialog::updateBounds);
+    }
+    QSize available = screen()->availableGeometry().size();
+    if (auto *handle = windowHandle()) {
+        const QMargins frame = handle->frameMargins();
+        available -= QSize(frame.left() + frame.right(), frame.top() + frame.bottom());
+    }
+    available = available.expandedTo(QSize(1, 1));
+    setMaximumSize(available);
+    const int w = qMin(width(), available.width());
+    const auto margins = m_warn->parentWidget()->layout()->contentsMargins();
+    const int warningHeight = m_warn->heightForWidth(qMax(1, w - margins.left() - margins.right()));
+    const int headHeight = m_head->heightForWidth(w), barHeight = m_bar->heightForWidth(w);
+    m_warn->setMinimumHeight(warningHeight);
+    m_head->setFixedHeight(headHeight);
+    m_bar->setFixedHeight(barHeight);
+    m_details->setMinimumHeight(qMax(32, fontMetrics().height() + 8));
+    const int minimum = headHeight + warningHeight + barHeight + margins.top() + margins.bottom()
+        + m_warn->parentWidget()->layout()->spacing() + m_details->minimumHeight();
+    setMinimumSize(qMin(520, available.width()), qMin(minimum, available.height()));
 }
 
 bool ConsentDialog::run(const ConsentRequest &r, QWidget *parent) {

@@ -18,7 +18,7 @@ namespace hn::app {
 
 class PluginsPage;
 
-// First-run notes folder choice. Returns the chosen folder (suggested when accepted unchanged), or empty if cancelled.
+// Returns the chosen folder, or empty on dismissal; the controller then persists the suggested default.
 QString runFirstRunDialog(const QString &suggested);
 
 // Live-applying settings: every change is validated, saved atomically and applied through the controller.
@@ -47,7 +47,11 @@ protected:
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dropEvent(QDropEvent *e) override;
 private:
-    void apply();
+    void apply(bool fontEdited = false);
+    void syncAppearanceFromController();
+    void resizeKeyRows();
+    void showNote(const QString &message);
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void refreshThemes(const QString &select);
     QWidget *tabAppearance(), *tabNotes(), *tabBehavior(), *tabKeys();
     AppController *m_c;
@@ -61,6 +65,7 @@ private:
     QTabWidget *m_tabs;
     PluginsPage *m_pluginsPage;
     bool m_loading = true;
+    bool m_keysResizePending = false;
 };
 
 } // namespace hn::app

@@ -10,6 +10,8 @@ namespace hn::theme {
 constexpr qint64 kMaxThemeBytes = 64 * 1024;
 
 QString themesDir();                              // $XDG_CONFIG_HOME/hyprnotes/themes
+// Case-insensitive canonical built-in IDs, without trimming; empty and copy names are false. No I/O.
+bool isBuiltinTheme(const QString &name);
 bool validThemeName(const QString &name);         // [A-Za-z0-9][A-Za-z0-9._-]{0,47}, no ".."
 QString sanitizeThemeName(const QString &raw);    // empty when nothing usable is left
 double contrastRatio(const QColor &a, const QColor &b);   // WCAG
@@ -20,8 +22,8 @@ QJsonObject builtinThemeObject();                 // built-in modernist as a Hyp
 // Accepts Hyprnotes theme JSON, base16 YAML or a VS Code color theme JSON. Installs atomically under a sanitized unique
 // name (never overwrites a different theme: "-2", "-3"... suffix; an identical theme is reused). *nameOut = installed name.
 bool importTheme(const QString &srcPath, QString *nameOut, QString *errorOut, QStringList *warningsOut = nullptr);
-bool exportTheme(const QString &name, const QString &destPath, QString *errorOut = nullptr);   // "modernist" exports the built-in
-QStringList listThemes();                         // "modernist" first, then user themes sorted
+bool exportTheme(const QString &name, const QString &destPath, QString *errorOut = nullptr);   // built-ins export as <canonical-id>-copy
+QStringList listThemes();                         // seven built-ins in canonical order, then sorted non-reserved user IDs
 bool removeTheme(const QString &name, QString *errorOut = nullptr);   // user themes only
 
 // Foreign converters: strict, produce a Hyprnotes theme object (not yet validated) and a suggested name.

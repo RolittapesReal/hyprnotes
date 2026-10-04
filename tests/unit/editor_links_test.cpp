@@ -526,19 +526,34 @@ private slots:
         f.key(Qt::Key_Tab);
         QVERIFY(f.plain().endsWith(QStringLiteral("[[Item11]]")));
     }
+    void highlightedRowIsAccentBar_data()
+    {
+        QTest::addColumn<bool>("square");
+        QTest::newRow("rounded-default") << false;
+        QTest::newRow("custom-radius-zero") << true;
+    }
     void highlightedRowIsAccentBar()
     {
+        QFETCH(bool, square);
         LFx f({}, false, false);
+        auto t = hn::theme::loadTheme(QStringLiteral("modernist"), false);
+        if (square) t.radius = 0;
+        f.ed.setTheme(t);
         f.ed.setCompletionTriggers({"/"});
         f.text("/al");
         f.ed.showCompletions(items(3, "Alpha"));
         const QImage img = f.ed.completionPopup()->grab().toImage();
-        const auto t = hn::theme::loadTheme(QStringLiteral("modernist"), false);
         const int rh = (img.height() - 2) / 3;
         QCOMPARE(img.pixelColor(1, 5), t.accent);        // selected row: accent bar
         QVERIFY(img.pixelColor(1, rh + 5) != t.accent);   // other rows: none
-        QCOMPARE(img.pixelColor(0, 0), t.border);         // hairline border, square corners
-        QCOMPARE(img.pixelColor(img.width() - 1, img.height() - 1), t.border);
+        // The hairline remains intact on every straight edge, regardless of corner policy.
+        for (const QPoint &p : {QPoint(img.width() / 2, 0), QPoint(img.width() / 2, img.height() - 1),
+                               QPoint(0, img.height() / 2), QPoint(img.width() - 1, img.height() / 2)})
+            QCOMPARE(img.pixelColor(p), t.border);
+        // Rounded corners are transparent; radius=0 is opaque, including antialiased border joins.
+        for (const QPoint &p : {QPoint(0, 0), QPoint(img.width() - 1, 0),
+                               QPoint(0, img.height() - 1), QPoint(img.width() - 1, img.height() - 1)})
+            QCOMPARE(img.pixelColor(p).alpha(), square ? 255 : 0);
     }
     void popupGeometryOnSmallScreens()
     {

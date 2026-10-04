@@ -7,12 +7,17 @@
 
 namespace hn::editor {
 
-// Flat modernist list popup (square, hairline border, accent bar on the selected row, max 8 rows, scroll). It never takes
+// Flat modernist list popup (theme popup radius, hairline border, accent bar on the selected row, max 8 rows, scroll). It never takes
 // focus: NoteEditor keeps it and forwards navigation keys. Private to the editor module.
 class CompletionPopup : public QWidget {
 public:
     static constexpr int kMaxRows = 8;
     explicit CompletionPopup(QWidget *owner);
+    struct RowLayout {
+        QRect labelRect, detailRect;
+        QString labelText, detailText;
+    };
+    RowLayout rowLayout(int index) const;
     void setTheme(const hn::theme::Theme &t, const QFont &f);
     void setItems(const QList<CompletionItem> &items, const QString &query);
     int count() const { return int(m_items.size()); }

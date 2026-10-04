@@ -1,4 +1,5 @@
 #include "plugin_bridges.h"
+#include "action_row.h"
 #include "hn/core/frontmatter.h"
 #include "hn/core/markdown_codec.h"
 #include "link_rename.h"
@@ -290,7 +291,7 @@ public:
     QVBoxLayout *body;
     QPushButton *ok, *cancel;
     FlatDialog(QWidget *parent, const QString &plugin, const QString &title, const QString &okText, bool okDefault) : QDialog(parent) {
-        const auto &t = ui::theme();
+        setObjectName("hnPluginDialog");
         setWindowTitle(title);
         setWindowIcon(ui::appIcon());
         setModal(true);
@@ -300,15 +301,22 @@ public:
         root->setSpacing(0);
         auto *head = new QWidget(this);
         head->setObjectName("hnPlHead");
-        head->setStyleSheet(QString("QWidget#hnPlHead { border-left: 6px solid %1; border-bottom: 1px solid %2; }").arg(t.accent.name(), t.border.name()));
+        const auto restyle = [head] {
+            const auto &t = ui::theme();
+            head->setStyleSheet(QString("QWidget#hnPlHead { border-left: 6px solid %1; border-bottom: 1px solid %2; }").arg(t.accent.name(), t.border.name()));
+        };
+        restyle();
+        connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, this, restyle);
         auto *hl = new QVBoxLayout(head);
         hl->setContentsMargins(20, 12, 20, 12);
         hl->setSpacing(2);
         auto *k = new QLabel(tr("PLUGIN  -  %1").arg(plugin.toUpper()), head);
-        k->setFont(ui::labelFont(10));
-        k->setStyleSheet(QString("color: %1;").arg(t.muted.name()));
+        k->setProperty("hnRole", "section");
+        k->setWordWrap(true);
+        k->setTextFormat(Qt::PlainText);
         auto *ti = new QLabel(title, head);
-        ti->setFont(ui::uiFont(16, QFont::Bold));
+        ti->setProperty("hnRole", "heading");
+        ti->setTextFormat(Qt::PlainText);
         ti->setWordWrap(true);
         hl->addWidget(k);
         hl->addWidget(ti);
@@ -319,23 +327,31 @@ public:
         body->setSpacing(8);
         root->addWidget(bw, 1);
         auto *bar = new QWidget(this);
-        auto *bh = new QHBoxLayout(bar);
+        auto *bh = new QVBoxLayout(bar);
         bh->setContentsMargins(20, 8, 20, 16);
-        bh->addStretch(1);
-        cancel = new QPushButton(tr("Cancel"), bar);
-        ok = new QPushButton(okText, bar);
+        auto *actions = new ui::ActionRow(bar);
+        cancel = new ui::WrappingButton(tr("Cancel"), bar);
+        ok = new ui::WrappingButton(okText, bar);
         cancel->setMinimumHeight(36);
         ok->setMinimumHeight(36);
         cancel->setAutoDefault(!okDefault);
         cancel->setDefault(!okDefault);
         ok->setAutoDefault(okDefault);
         ok->setDefault(okDefault);
-        if (okDefault) ok->setStyleSheet(ui::accentButtonStyle() + "QPushButton { text-align: center; min-height: 36px; }");
-        bh->addWidget(cancel);
-        bh->addWidget(ok);
+        if (okDefault) ok->setProperty("hnRole", "primary");
+        actions->addButton(cancel);
+        actions->addButton(ok);
+        bh->addWidget(actions);
         root->addWidget(bar);
         connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
         connect(ok, &QPushButton::clicked, this, &QDialog::accept);
+    }
+protected:
+    bool event(QEvent *event) override {
+        const bool handled = QDialog::event(event);
+        if (layout() && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize))
+            setMinimumHeight(layout()->totalHeightForWidth(width()));
+        return handled;
     }
 };
 }  // namespace
@@ -348,6 +364,7 @@ std::optional<QString> PluginUiBridge::prompt(const QString &pluginId, const QSt
     if (m_s->hooks().prompt) return m_s->hooks().prompt(m_s->nameOf(pluginId), title, label, def);
     FlatDialog d(QApplication::activeWindow(), m_s->nameOf(pluginId), title, QObject::tr("OK"), true);
     auto *l = new QLabel(label, &d);
+    l->setTextFormat(Qt::PlainText);
     l->setWordWrap(true);
     auto *e = new QLineEdit(def, &d);
     e->setMinimumHeight(32);
@@ -363,6 +380,7 @@ bool PluginUiBridge::confirm(const QString &pluginId, const QString &msg) {
     if (m_s->hooks().confirm) return m_s->hooks().confirm(m_s->nameOf(pluginId), msg);
     FlatDialog d(QApplication::activeWindow(), m_s->nameOf(pluginId), QObject::tr("Confirm"), QObject::tr("Continue"), false);
     auto *l = new QLabel(msg, &d);
+    l->setTextFormat(Qt::PlainText);
     l->setWordWrap(true);
     d.body->addWidget(l);
     return d.exec() == QDialog::Accepted;

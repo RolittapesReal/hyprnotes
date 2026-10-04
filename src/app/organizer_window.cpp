@@ -130,10 +130,21 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     m_root = root;
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
+    root->setSizeConstraint(QLayout::SetNoConstraint);
     auto vline = [this] { auto *l = new QWidget(this); l->setFixedWidth(1); l->setObjectName("hnVLine"); return l; };
 
     // ---- rail
-    auto *railCol = new QWidget(this);
+    m_railToggle = new ui::IconButton("folder", tr("Folders and tags"), this, 32);
+    m_railToggle->setObjectName("hnRailToggle");
+    m_railToggle->setCheckable(true);
+    m_railToggle->hide();
+    root->addWidget(m_railToggle, 0, Qt::AlignTop);
+    connect(m_railToggle, &QAbstractButton::clicked, this, [this](bool on) {
+        m_railOpen = on; allocateColumns();
+        if (on) m_rail->setFocus(Qt::TabFocusReason); else m_search->setFocus(Qt::TabFocusReason);
+    });
+    auto *railCol = m_railCol = new QWidget(this);
+    railCol->setObjectName("hnRailColumn");
     railCol->setFixedWidth(184);
     auto *rl = new QVBoxLayout(railCol);
     rl->setContentsMargins(0, 0, 0, 0);
@@ -171,10 +182,11 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     nbl->addWidget(m_newBtn);
     rl->addWidget(nb);
     root->addWidget(railCol);
-    root->addWidget(vline());
+    m_railLine = vline(); root->addWidget(m_railLine);
 
     // ---- list
-    auto *listCol = new QWidget(this);
+    auto *listCol = m_listCol = new QWidget(this);
+    listCol->setObjectName("hnListColumn");
     listCol->setFixedWidth(304);
     auto *ll = new QVBoxLayout(listCol);
     ll->setContentsMargins(0, 0, 0, 0);
@@ -189,7 +201,7 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     m_searchIcon->setGeometry(8, 8, 16, 16);
     m_searchIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_clearBtn = new ui::IconButton("close", tr("Clear search"), m_search, 24);
-    m_clearBtn->setGeometry(272 - 28, 4, 24, 24);   // listCol 304 - 2 x 16 margin = 272
+    m_search->installEventFilter(this);
     m_clearBtn->hide();
     connect(m_clearBtn, &QAbstractButton::clicked, m_search, &QLineEdit::clear);
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString &t) { m_clearBtn->setVisible(!t.isEmpty()); });
@@ -233,7 +245,9 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     root->addWidget(vline());
 
     // ---- editor region
-    auto *edHost = new QWidget(this);
+    auto *edHost = m_editorCol = new QWidget(this);
+    edHost->setObjectName("hnEditorColumn");
+    edHost->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_editorStack = new QStackedLayout(edHost);
     m_editorEmpty = new ui::EmptyState(edHost);
     m_elsewherePanel = new ui::EmptyState(edHost);
@@ -349,6 +363,39 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     updateHeader();
     runSearch(0);
     syncDock();
+    allocateColumns();
+}
+
+void OrganizerWindow::allocateColumns(int dockWidth) {
+    if (!m_editorCol) return;
+    if (dockVisible()) {
+        // Preference is persistent; this allocation is only a temporary space constraint.
+        const int preferred = dockWidth >= 0 ? dockWidth : m_c->dockPrefs().width;
+        const int maximum = qMax(int(PanelDock::kMinW), width() - 32 - 160 - 280 - 3);
+        m_dock->setFixedWidth(qBound(int(PanelDock::kMinW), preferred, maximum));
+    }
+    const int available = width() - (dockVisible() ? m_dock->width() + 1 : 0) - 2;
+    m_compactRail = available < 640;
+    m_railToggle->setVisible(m_compactRail);
+    m_railToggle->setChecked(m_compactRail && m_railOpen);
+    m_railCol->setVisible(!m_compactRail || m_railOpen);
+    m_railLine->setVisible(!m_compactRail);
+    m_listCol->setVisible(!m_compactRail || !m_railOpen);
+    if (m_compactRail) {
+        const int side = qBound(160, available - 32 - 280, 304);
+        m_railCol->setFixedWidth(side); m_listCol->setFixedWidth(side);
+    } else {
+        const int rail = qBound(160, available - 280 - 254, 184);
+        m_railCol->setFixedWidth(rail);
+        m_listCol->setFixedWidth(qBound(192, available - rail - 280, 304));
+    }
+    m_root->invalidate();
+    m_root->activate();
+}
+
+void OrganizerWindow::resizeEvent(QResizeEvent *event) {
+    QWidget::resizeEvent(event);
+    allocateColumns();
 }
 
 bool OrganizerWindow::dockVisible() const { return m_dock && m_dock->isVisibleTo(this); }
@@ -357,12 +404,12 @@ void OrganizerWindow::syncDock() {
     const bool has = m_c->plugins().hasPanels();
     if (!has) {
         if (m_dock) {
-            if (m_dockExtra) { setMinimumWidth(720); resize(qMax(720, width() - m_dockExtra), height()); m_dockExtra = 0; }
             delete m_dock; m_dock = nullptr;
             delete m_dockLine; m_dockLine = nullptr;
         }
         m_dockToggle->hide();
         m_header->relayout();
+        allocateColumns();
         return;
     }
     m_dockToggle->show();
@@ -384,33 +431,32 @@ void OrganizerWindow::syncDock() {
             DockPrefs p = m_c->dockPrefs();
             p.width = w;
             m_c->setDockPrefs(p);
+            allocateColumns();
         });
+        connect(m_dock, &PanelDock::widthPreviewed, this, &OrganizerWindow::allocateColumns);
         if (pr.visible) setDockVisible(true);
     }
     m_dockToggle->setChecked(dockVisible());
     m_header->relayout();
+    allocateColumns();
 }
 
 void OrganizerWindow::setDockVisible(bool on) {
     if (!m_dock || on == dockVisible()) { if (m_dockToggle) m_dockToggle->setChecked(dockVisible()); return; }
-    const int w = m_dock->width() + 1;
     if (on) {
-        setMinimumWidth(720 + w);
         m_dockLine->show();
         m_dock->show();
-        if (!isMaximized() && !isFullScreen()) { resize(width() + w, height()); m_dockExtra = w; }
         m_dock->setSession(m_session.data());
         m_dock->refresh();
     } else {
         m_dock->hide();
         m_dockLine->hide();
-        setMinimumWidth(720);
-        if (m_dockExtra) { resize(qMax(720, width() - m_dockExtra), height()); m_dockExtra = 0; }
     }
     m_dockToggle->setChecked(on);
     DockPrefs p = m_c->dockPrefs();
     p.visible = on;
     m_c->setDockPrefs(p);
+    allocateColumns();
 }
 
 void OrganizerWindow::dragEnterEvent(QDragEnterEvent *e) {
@@ -439,6 +485,13 @@ void OrganizerWindow::dropEvent(QDropEvent *e) {
 OrganizerWindow::~OrganizerWindow() { detachSession(); }
 
 bool OrganizerWindow::eventFilter(QObject *o, QEvent *e) {
+    if (o == m_search && e->type() == QEvent::Resize) {
+        m_clearBtn->move(qMax(0, m_search->width() - m_clearBtn->width() - 4), (m_search->height() - m_clearBtn->height()) / 2);
+        m_searchIcon->move(8, (m_search->height() - 16) / 2);
+    }
+    if (o == m_rail && m_compactRail && e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+        m_railOpen = false; allocateColumns(); m_railToggle->setFocus(); return true;
+    }
     if ((o == m_list || o == m_rail) && e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Question) {
         m_c->showShortcuts(this);
         return true;
@@ -458,6 +511,12 @@ void OrganizerWindow::restyle() {
     const auto &t = ui::theme();
     m_newBtn->setStyleSheet(ui::accentButtonStyle());
     m_newBtn->setIcon(ui::icon("plus", t.accentText, 16));
+    {   // The rail is a fixed 184px: at large text sizes drop the label (icon + tooltip) rather than clip it.
+        QFont bold = font(); bold.setBold(true); bold.setPixelSize(t.baseSize);
+        const bool fits = QFontMetrics(bold).horizontalAdvance(tr("New note")) + 16 + 8 + 32 <= 184 - 32;
+        m_newBtn->setText(fits ? tr("New note") : QString());
+        m_newBtn->setAccessibleName(tr("New note"));
+    }
     m_searchIcon->setPixmap(ui::icon("search", t.muted).pixmap(QSize(16, 16), devicePixelRatioF()));
     for (auto *w : findChildren<QWidget *>("hnBrand")) w->setStyleSheet(QString("QWidget#hnBrand { border-bottom: 1px solid %1; }").arg(t.border.name()));
     for (auto *w : findChildren<QWidget *>("hnHeadLine")) w->setStyleSheet(QString("QWidget#hnHeadLine { border-bottom: 1px solid %1; }").arg(t.border.name()));
@@ -471,7 +530,14 @@ void OrganizerWindow::present(bool focus) {
     if (focus) { raise(); activateWindow(); }
 }
 
-void OrganizerWindow::focusSearch() { m_search->setFocus(); m_search->selectAll(); }
+void OrganizerWindow::focusSearch() {
+    if (m_compactRail && m_railOpen) {
+        m_railOpen = false;
+        allocateColumns();
+    }
+    m_search->setFocus();
+    m_search->selectAll();
+}
 
 void OrganizerWindow::refresh() { m_refreshTimer.start(); }
 

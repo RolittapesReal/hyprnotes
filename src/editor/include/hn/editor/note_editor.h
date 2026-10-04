@@ -168,6 +168,7 @@ private:
     struct LinksImpl;
     LinkState stateOf(const QString &target) const;
     void evaluateCompletion(bool fromTyping);
+    void restyleCompletionPopup();
     void linksTyped();
     void linksCaretMoved();
     void linksDocChanged(QTextDocument *d, int pos, int added);

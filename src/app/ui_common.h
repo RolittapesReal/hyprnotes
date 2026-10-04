@@ -14,6 +14,8 @@
 #include <QKeySequence>
 #include <QMap>
 
+class QScrollArea;
+
 namespace hn::app::ui {
 
 constexpr int kGrid = 8;
@@ -21,6 +23,15 @@ constexpr int kGrid = 8;
 const hn::theme::Theme &theme();
 void setTheme(const hn::theme::Theme &t);
 hn::theme::AnimationPolicy &animation();
+class ThemeNotifier final : public QObject {
+    Q_OBJECT
+public:
+    using QObject::QObject;
+signals:
+    void changed();
+};
+ThemeNotifier *themeNotifier();
+void setReducedMotion(bool reduced);
 
 QIcon appIcon();
 QIcon icon(const QString &name, const QColor &tint = {}, int px = 16);
@@ -98,6 +109,7 @@ class FadeOverlay : public QWidget {
 public:
     explicit FadeOverlay(QWidget *target);
     void play();
+    void cancel();
     bool running() const { return m_anim.state() == QAbstractAnimation::Running; }
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -138,6 +150,12 @@ public:
     static bool isOpen(QWidget *window);
     struct Row { QString group, label; QStringList keys; };
     const QList<Row> &rows() const { return m_rows; }
+    struct RowGeometry { QRect label; QList<QRect> keys; };
+    QList<RowGeometry> rowGeometries() const;
+    QRect titleRect() const { return m_titleRect; }
+    QRect closeHintRect() const { return m_closeRect; }
+    int scrollOffset() const { return m_scroll; }
+    int maximumScroll() const { return qMax(0, m_contentH - qMax(0, height() - m_contentTop - 8)); }
     static ShortcutSheet *openOn(QWidget *window) { return window ? window->findChild<ShortcutSheet *>("hnSheet", Qt::FindDirectChildrenOnly) : nullptr; }
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -145,10 +163,20 @@ protected:
     void keyPressEvent(QKeyEvent *) override;
     void mousePressEvent(QMouseEvent *) override { close(); }
     void wheelEvent(QWheelEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
     bool eventFilter(QObject *o, QEvent *e) override;
 private:
     explicit ShortcutSheet(QWidget *window, const QList<Row> &rows);
     void close();
+    void relayout();
+    void scrollTo(int offset);
+    int columnScroll(int x) const;
+    struct GroupGeometry { QString text; QRect rect; };
+    QList<RowGeometry> m_geometry;
+    QList<GroupGeometry> m_groups;
+    QRect m_titleRect, m_closeRect;
+    int m_contentTop = 0;
+    int m_columnHeight[2] = {0, 0};
     QList<Row> m_rows;
     QPointer<QWidget> m_prevFocus;
     int m_scroll = 0, m_contentH = 0;
@@ -164,10 +192,17 @@ public:
     void setContent(Art art, const QString &title, const QString &body, const QString &primary = {}, const QString &secondary = {});
 protected:
     void resizeEvent(QResizeEvent *) override;
+    bool eventFilter(QObject *, QEvent *) override;
 signals:
     void primaryClicked();
     void secondaryClicked();
 private:
+    void relayout();
+    int layoutContent(int width);
+    void restyle();
+    QScrollArea *m_scroll;
+    QWidget *m_content;
+    bool m_layingOut = false;
     class ArtWidget;
     ArtWidget *m_art;
     QLabel *m_title, *m_body;

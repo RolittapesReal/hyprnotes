@@ -43,6 +43,8 @@ public:
     void unload(const QString &id);   // closes the state, keeps the declaration
     void forget(const QString &id);   // unload + drop declaration
     bool isLoaded(const QString &id) const;
+    bool isBusy(const QString &id) const;
+    bool usesNote(NoteBridge *note) const;  // includes disabled callbacks still unwinding
     int loadedCount() const;
     quint64 memoryUsed(const QString &id) const;
     bool ensureLoaded(const QString &id, QString *err = nullptr);
@@ -68,6 +70,7 @@ public:
     struct Impl;  // internal
 
 signals:
+    void callbackFinished(const QString &id);  // after stack/transaction cleanup, unload and failure accounting
     void autoDisabled(const QString &id, const QString &reason);  // circuit breaker or integrity failure
     void panelRefreshRequested(const QString &pluginId, const QString &panelId, NoteBridge *note);  // hn.panel_refresh (never re-enters Lua)
 
@@ -154,6 +157,8 @@ public:
     bool renderPanel(const QString &pluginId, const QString &panelId, NoteBridge *note, QList<PanelBlock> *out, QString *err = nullptr);
     // renderPanel + PanelBridge::updatePanel (the error text, if any, goes along with empty blocks).
     bool refreshPanel(const QString &pluginId, const QString &panelId, NoteBridge *note, QString *err = nullptr);
+    // Host scheduling: runs now if safe, otherwise coalesces until the callback returns.
+    void requestPanelRefresh(const QString &pluginId, const QString &panelId, NoteBridge *note);
     // Runs an on_click callback with the panel's plugin identity and normal budgets. Tokens are only valid until the next render.
     bool panelClick(const QString &pluginId, const QString &panelId, int token, NoteBridge *note, QString *err = nullptr);
     // Only panels the UI marked active are re-rendered by events / hn.panel_refresh; inactive panels cost nothing.
@@ -184,6 +189,25 @@ private:
     void saveCache();
     void deliverNow(const QString &event, const QString &arg, NoteBridge *note);
     void syncPanels();
+    void publishRegistry();
+    void invalidatePanels(const QString &id);
+    struct NoteRef {
+        NoteBridge *note = nullptr;
+        std::shared_ptr<bool> alive;
+        bool valid() const { return !alive || *alive; }
+    };
+    NoteRef noteRef(NoteBridge *note);
+    struct PanelRequest {
+        NoteRef note;
+        quint64 generation = 0;
+        bool explicitContext = false;
+        bool allowLoad = false; // a fresh request may load cached registrations once
+    };
+    // Empty panelId identifies a regular hn.on subscriber.
+    struct DeferredEvent { QString pluginId, panelId, event, arg; PanelRequest request; };
+    bool validPanel(const QString &qid, const PanelRequest &request) const;
+    void queuePanelRefresh(const QString &qid, NoteBridge *note, bool explicitContext);
+    void schedulePanelDrain();
     QList<PanelReg> activePanelsFor(const QString &event) const;
 
     ManagerConfig cfg_;
@@ -197,12 +221,19 @@ private:
     QList<PluginError> errors_;
     QJsonObject cache_;  // id -> {hash, regs}: lets the UI list commands without creating Lua states
     bool cacheSuspended_ = false;
-    struct Pending { QString arg; NoteBridge *note; };
+    int discoveryDepth_ = 0;
+    bool registryPending_ = false, drainScheduled_ = false, drainingPanels_ = false;
+    int drainCascade_ = 0;  // callbacks run since the deferred queue was last empty
+    quint64 nextGeneration_ = 0;
+    QHash<QString, quint64> generations_;
+    QHash<NoteBridge *, std::shared_ptr<bool>> noteLives_;
+    QList<DeferredEvent> deferredEvents_;
+    struct Pending { QString arg; NoteRef note; };
     QMap<QString, Pending> pending_;
     QTimer timer_, panelTimer_;
     QMap<QString, QString> shownPanels_;                 // qualified id -> title/icon last announced to the PanelBridge
     QSet<QString> activePanels_;                         // qualified ids the UI currently displays
-    QMap<QString, NoteBridge *> pendingPanels_;          // qualified id -> note, from hn.panel_refresh
+    QMap<QString, PanelRequest> pendingPanels_;          // latest host context per panel
 };
 
 }  // namespace hn::plugins

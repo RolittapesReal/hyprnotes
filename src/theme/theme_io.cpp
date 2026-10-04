@@ -1,5 +1,6 @@
 #include <hn/theme/theme_io.h>
 #include "config.h"
+#include "builtin_themes.h"
 #include <QColor>
 #include <QDir>
 #include <QFile>
@@ -45,6 +46,7 @@ QJsonObject wrap(const QJsonObject &tokens, const QString &name) {
 } // namespace
 
 QString themesDir() { return configHome() + "/hyprnotes/themes"; }
+bool isBuiltinTheme(const QString &name) { return detail::builtinThemeIds().contains(name, Qt::CaseInsensitive); }
 bool validThemeName(const QString &n) { return kName.match(n).hasMatch() && !n.contains(".."); }
 
 QString sanitizeThemeName(const QString &raw) {
@@ -132,7 +134,7 @@ bool importTheme(const QString &src, QString *nameOut, QString *errorOut, QStrin
     QString base = sanitizeThemeName(suggested);
     if (base.isEmpty()) base = sanitizeThemeName(fi.completeBaseName());
     if (base.isEmpty()) return fail("no usable theme name");
-    if (base.compare("modernist", Qt::CaseInsensitive) == 0) return fail("\"modernist\" is the built-in theme name; rename the theme");
+    if (isBuiltinTheme(base)) return fail(QString("\"%1\" is a built-in theme name; rename the theme").arg(base));
     if (const QString why = validateThemeObject(o, &warnings); !why.isEmpty()) return fail(why);
 
     // ponytail: exists-check then atomic rename is not race-free against a concurrent importer; fine for a human-driven action.
@@ -162,8 +164,12 @@ bool exportTheme(const QString &name, const QString &dest, QString *errorOut) {
     QString &err = errorOut ? *errorOut : dummy;
     if (dest.isEmpty()) { err = "no destination"; return false; }
     QByteArray bytes;
-    if (name == "modernist" || name.isEmpty()) bytes = QJsonDocument(builtinThemeObject()).toJson(QJsonDocument::Indented);
-    else {
+    if (name.isEmpty() || isBuiltinTheme(name)) {
+        const QString canonical = name.isEmpty() ? QString("modernist") : name.toLower();
+        QJsonObject object = canonical == "modernist" ? builtinThemeObject() : detail::presetThemeObject(canonical);
+        object["name"] = canonical + "-copy";
+        bytes = QJsonDocument(object).toJson(QJsonDocument::Indented);
+    } else {
         QFile f(themesDir() + "/" + name + ".json");
         if (!validThemeName(name) || !f.open(QIODevice::ReadOnly)) { err = QString("theme \"%1\" not found").arg(name); return false; }
         bytes = f.readAll();
@@ -172,17 +178,17 @@ bool exportTheme(const QString &name, const QString &dest, QString *errorOut) {
 }
 
 QStringList listThemes() {
-    QStringList r{"modernist"};
+    const QStringList r = detail::builtinThemeIds();
     QStringList u;
     for (const QFileInfo &fi : QDir(themesDir()).entryInfoList({"*.json"}, QDir::Files, QDir::Name))
-        if (validThemeName(fi.completeBaseName()) && fi.completeBaseName() != "modernist") u << fi.completeBaseName();
+        if (validThemeName(fi.completeBaseName()) && !isBuiltinTheme(fi.completeBaseName())) u << fi.completeBaseName();
     return r + u;
 }
 
 bool removeTheme(const QString &name, QString *errorOut) {
     QString dummy;
     QString &err = errorOut ? *errorOut : dummy;
-    if (name == "modernist") { err = "the built-in theme cannot be removed"; return false; }
+    if (isBuiltinTheme(name)) { err = "the built-in theme cannot be removed"; return false; }
     if (!validThemeName(name) || !QFile::exists(themesDir() + "/" + name + ".json")) { err = QString("theme \"%1\" not found").arg(name); return false; }
     if (!QFile::remove(themesDir() + "/" + name + ".json")) { err = "could not delete the theme file"; return false; }
     return true;

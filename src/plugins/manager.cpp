@@ -40,12 +40,20 @@ PluginManager::PluginManager(ManagerConfig cfg, QObject *parent)
     connect(host_.get(), &LuaPluginHost::panelRefreshRequested, this, [this](const QString &pid, const QString &panelId, NoteBridge *note) {
         const QString q = pid + QLatin1Char(':') + panelId;
         if (!activePanels_.contains(q)) return;  // nobody is looking: nothing to do
-        pendingPanels_[q] = note;
-        if (!panelTimer_.isActive()) panelTimer_.start();
+        queuePanelRefresh(q, note, false);
+        if (!pendingPanels_.isEmpty() && !panelTimer_.isActive()) panelTimer_.start();
     });
-    connect(&registry_, &PluginRegistry::changed, this, [this] { saveCache(); syncPanels(); emit pluginsChanged(); });
+    connect(&registry_, &PluginRegistry::changed, this, &PluginManager::publishRegistry);
+    connect(host_.get(), &LuaPluginHost::callbackFinished, this, [this] {
+        for (auto it = noteLives_.begin(); it != noteLives_.end();) {
+            if (!*it.value() && !host_->usesNote(it.key())) it = noteLives_.erase(it);
+            else ++it;
+        }
+        schedulePanelDrain();
+    });
     connect(host_.get(), &LuaPluginHost::autoDisabled, this, [this](const QString &id, const QString &why) {
         if (auto it = entries_.find(id); it != entries_.end()) it->lastError = why;
+        invalidatePanels(id);
         registry_.remove(id);
         emit pluginAutoDisabled(id, why);
         emit pluginsChanged();
@@ -54,6 +62,21 @@ PluginManager::PluginManager(ManagerConfig cfg, QObject *parent)
 PluginManager::~PluginManager() {
     for (auto it = entries_.begin(); it != entries_.end(); ++it)
         if (it->m.tier == Tier::Native && trust_.record(it.key()).enabled) native_->deactivate(it.key());
+}
+
+void PluginManager::publishRegistry() {
+    if (discoveryDepth_) { registryPending_ = true; return; }
+    registryPending_ = false;
+    saveCache();
+    syncPanels();
+    emit pluginsChanged();
+}
+
+void PluginManager::invalidatePanels(const QString &id) {
+    generations_[id] = ++nextGeneration_;
+    for (auto it = pendingPanels_.begin(); it != pendingPanels_.end();)
+        if (it.key().startsWith(id + QLatin1Char(':'))) it = pendingPanels_.erase(it); else ++it;
+    deferredEvents_.removeIf([&](const DeferredEvent &event) { return event.pluginId == id; });
 }
 
 void PluginManager::saveCache() {
@@ -90,6 +113,7 @@ void PluginManager::syncPanels() {
 }
 
 void PluginManager::activateEntry(const QString &id, Entry &e) {
+    invalidatePanels(id);
     const auto rec = trust_.record(id);
     QString err;
     bool ok = true;
@@ -102,9 +126,11 @@ void PluginManager::activateEntry(const QString &id, Entry &e) {
             host_->setPlugin(e.m, rec.permissions, &regs);
             registry_.set(id, regs);
         } else {
+            ++discoveryDepth_;
             host_->setPlugin(e.m, rec.permissions, nullptr);
             ok = host_->ensureLoaded(id, &err);  // no cache for this package yet: run main chunk once to learn registrations
             if (ok) host_->unload(id);           // ...then drop the state again; the first real hook recreates it
+            --discoveryDepth_;
         }
     }
     if (!ok) {
@@ -116,6 +142,9 @@ void PluginManager::activateEntry(const QString &id, Entry &e) {
     } else {
         e.lastError.clear();
     }
+    // A visible dock may render synchronously from these notifications. Discovery
+    // tokens must have been discarded before any registration reaches the UI.
+    if (!discoveryDepth_ && registryPending_) publishRegistry();
 }
 
 void PluginManager::loadEntry(const QString &dir, const QString &name) {
@@ -153,8 +182,14 @@ void PluginManager::loadEntry(const QString &dir, const QString &name) {
 }
 
 void PluginManager::scan() {
+    for (auto it = generations_.cbegin(); it != generations_.cend(); ++it)
+        if (host_->isBusy(it.key())) {
+            audit_.log(QStringLiteral("busy"), it.key(), QStringLiteral("scan refused during callback dispatch"));
+            return;
+        }
     cacheSuspended_ = true;
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+        invalidatePanels(it.key());
         host_->forget(it.key());
         if (it->m.tier == Tier::Native) native_->deactivate(it.key());
     }
@@ -196,6 +231,14 @@ QList<PluginInfo> PluginManager::plugins() const {
 }
 
 InstallResult PluginManager::install(const QString &source, bool allowUpgrade) {
+    if (allowUpgrade) {
+        for (auto it = generations_.cbegin(); it != generations_.cend(); ++it)
+            if (host_->isBusy(it.key())) {
+                InstallResult result;
+                result.errors.append({it.key(), QStringLiteral("plugin is busy (upgrade refused during callback dispatch)")});
+                return result;
+            }
+    }
     PackageInstaller inst(cfg_.pluginsDir, &trust_, &audit_, cfg_.appVersion);
     // An upgrade replaces files under a running plugin: stop it first (it is re-activated below if consent is kept).
     if (allowUpgrade) {
@@ -241,6 +284,7 @@ bool PluginManager::enable(const QString &id, QString *err) {
     auto fail = [&](const QString &m) { if (err) *err = m; return false; };
     auto it = entries_.find(id);
     if (it == entries_.end() || it->invalid) return fail(QStringLiteral("plugin is not installed or has an invalid manifest"));
+    if (host_->isBusy(id)) return fail(QStringLiteral("plugin is busy (activation refused during callback)"));
     QString he;
     const QString h = hashDirectory(it->m.dir, &he);
     if (trust_.verifyHash(id, h)) {
@@ -263,6 +307,7 @@ bool PluginManager::disable(const QString &id) {
     auto it = entries_.find(id);
     if (it == entries_.end()) return false;
     trust_.setEnabled(id, false);
+    invalidatePanels(id);
     host_->forget(id);
     registry_.remove(id);
     if (it->m.tier == Tier::Native) native_->deactivate(id);
@@ -287,8 +332,10 @@ bool PluginManager::reload(const QString &id, bool trustChanges, QString *err) {
     auto fail = [&](const QString &m) { if (err) *err = m; return false; };
     auto it = entries_.find(id);
     if (it == entries_.end()) return fail(QStringLiteral("unknown plugin"));
+    if (host_->isBusy(id)) return fail(QStringLiteral("plugin is busy (reload refused during callback)"));
     const QString dir = it->m.dir;
     const bool wasEnabled = trust_.record(id).enabled;
+    invalidatePanels(id);
     host_->forget(id);
     registry_.remove(id);
     if (it->m.tier == Tier::Native) native_->deactivate(id);
@@ -353,11 +400,20 @@ QList<PanelReg> PluginManager::activePanelsFor(const QString &event) const {
 }
 
 void PluginManager::deliverNow(const QString &event, const QString &arg, NoteBridge *note) {
-    for (const auto &id : registry_.subscribers(event)) host_->deliver(id, event, arg, note);
-    for (const auto &pr : activePanelsFor(event)) {  // panels the UI shows: let on_event see it, then re-render
-        if (pr.onEvent) host_->deliverPanelEvent(pr.pluginId, pr.id, event, arg, note);
-        refreshPanel(pr.pluginId, pr.id, note);
+    const auto eventNote = noteRef(note);
+    if (!eventNote.valid()) return;
+    // Capture every recipient before invoking any Lua. An ordinary subscriber
+    // can post another event, whose panel payload must follow this event's.
+    for (const auto &id : registry_.subscribers(event)) {
+        deferredEvents_.append({id, {}, event, arg, {eventNote, generations_.value(id), false,
+            !host_->isLoaded(id) && !host_->isBusy(id)}});
     }
+    for (const auto &pr : activePanelsFor(event)) {
+        queuePanelRefresh(pr.qualifiedId(), note, false);
+        if (pr.onEvent) deferredEvents_.append({pr.pluginId, pr.id, event, arg,
+            {eventNote, generations_.value(pr.pluginId), false, !host_->isLoaded(pr.pluginId) && !host_->isBusy(pr.pluginId)}});
+    }
+    flushPanels();
     for (auto it = entries_.constBegin(); it != entries_.constEnd(); ++it)
         if (it->m.tier == Tier::Native && trust_.record(it.key()).enabled) native_->postEvent(it.key(), event, arg);
 }
@@ -368,31 +424,49 @@ void PluginManager::post(const QString &event, const QString &arg, NoteBridge *n
         for (auto it = entries_.constBegin(); it != entries_.constEnd() && !any; ++it) any = it->m.tier == Tier::Native && trust_.record(it.key()).enabled;
     if (!any) return;  // nobody listens: no allocation, no timer
     if (coalesced().contains(event)) {
-        pending_[event] = {arg, note};
+        pending_[event] = {arg, noteRef(note)};
         if (!timer_.isActive()) timer_.start();
         return;
     }
+    const auto context = noteRef(note);
+    const QString incomingEvent = event, payload = arg;
     if (!pending_.isEmpty()) flushEvents();  // keep ordering: coalesced events first
-    deliverNow(event, arg, note);
+    if (context.valid()) deliverNow(incomingEvent, payload, note);
 }
 
 void PluginManager::flushEvents() {
     timer_.stop();
     const auto p = pending_;
     pending_.clear();
-    for (auto it = p.begin(); it != p.end(); ++it) deliverNow(it.key(), it->arg, it->note);
+    for (auto it = p.begin(); it != p.end(); ++it)
+        if (it->note.valid()) deliverNow(it.key(), it->arg, it->note.note);
 }
 
 void PluginManager::detachNote(NoteBridge *note) {
-    for (const auto &p : std::as_const(pending_))
-        if (p.note == note) { flushEvents(); break; }
-    for (const auto &n : std::as_const(pendingPanels_))
-        if (n == note) { flushPanels(); return; }
+    if (!note) return;
+    // Preserve delivery before an ordinary close. deliverNow defers busy hosts;
+    // those queued references are cancelled below before the bridge can die.
+    for (const auto &event : std::as_const(pending_))
+        if (event.note.note == note) { flushEvents(); break; }
+    auto &alive = noteLives_[note];
+    if (!alive) alive = std::make_shared<bool>(false); else *alive = false;
+    for (auto it = pending_.begin(); it != pending_.end();)
+        if (it->note.note == note) it = pending_.erase(it); else ++it;
+    for (auto it = pendingPanels_.begin(); it != pendingPanels_.end();)
+        if (it->note.note == note) it = pendingPanels_.erase(it); else ++it;
+    deferredEvents_.removeIf([&](const DeferredEvent &event) { return event.request.note.note == note; });
+    if (!host_->usesNote(note)) noteLives_.remove(note);
+    if (pending_.isEmpty()) timer_.stop();
+    if (pendingPanels_.isEmpty()) panelTimer_.stop();
 }
 
 QString PluginManager::preSave(const QString &text, NoteBridge *note) {
+    const auto context = noteRef(note);
     QString cur = text;
-    for (const auto &id : registry_.subscribers(QStringLiteral("note.pre_save"))) cur = host_->preSave(id, cur, note);
+    for (const auto &id : registry_.subscribers(QStringLiteral("note.pre_save"))) {
+        if (!context.valid()) break;
+        cur = host_->preSave(id, cur, note);
+    }
     return cur;
 }
 
@@ -436,26 +510,127 @@ bool PluginManager::panelClick(const QString &pid, const QString &panelId, int t
 void PluginManager::setPanelActive(const QString &pid, const QString &panelId, bool active) {
     const QString q = pid + QLatin1Char(':') + panelId;
     if (active) activePanels_.insert(q);
-    else { activePanels_.remove(q); pendingPanels_.remove(q); }
-}
-
-void PluginManager::flushPanels() {
-    panelTimer_.stop();
-    const auto p = pendingPanels_;
-    pendingPanels_.clear();
-    for (auto it = p.begin(); it != p.end(); ++it) {
-        const int c = int(it.key().indexOf(QLatin1Char(':')));
-        if (c > 0 && activePanels_.contains(it.key())) refreshPanel(it.key().left(c), it.key().mid(c + 1), it.value());
+    else {
+        activePanels_.remove(q); pendingPanels_.remove(q);
+        deferredEvents_.removeIf([&](const DeferredEvent &event) { return event.pluginId == pid && event.panelId == panelId; });
     }
 }
 
+PluginManager::NoteRef PluginManager::noteRef(NoteBridge *note) {
+    if (!note) return {};
+    auto &alive = noteLives_[note];
+    if (!alive) alive = std::make_shared<bool>(true);
+    return {note, alive};
+}
+
+bool PluginManager::validPanel(const QString &qid, const PanelRequest &request) const {
+    const int c = int(qid.indexOf(QLatin1Char(':')));
+    const QString pid = qid.left(c), panel = qid.mid(c + 1);
+    if (c <= 0 || !request.note.valid() || !activePanels_.contains(qid) ||
+        request.generation != generations_.value(pid) || !trust_.record(pid).enabled || !entries_.contains(pid)) return false;
+    for (const auto &registration : registry_.panels(pid)) if (registration.id == panel) return true;
+    return false;
+}
+
+void PluginManager::queuePanelRefresh(const QString &qid, NoteBridge *note, bool explicitContext) {
+    const QString pid = qid.section(QLatin1Char(':'), 0, 0);
+    PanelRequest request{noteRef(note), generations_.value(pid), explicitContext, !host_->isLoaded(pid) && !host_->isBusy(pid)};
+    if (!validPanel(qid, request)) return;
+    const auto old = pendingPanels_.constFind(qid);
+    if (old != pendingPanels_.cend() && old->explicitContext && !explicitContext) return;
+    pendingPanels_[qid] = request;
+}
+
+void PluginManager::requestPanelRefresh(const QString &pid, const QString &panelId, NoteBridge *note) {
+    const QString qid = pid + QLatin1Char(':') + panelId;
+    PanelRequest request{noteRef(note), generations_.value(pid), true};
+    if (!validPanel(qid, request)) return;
+    const bool pendingEvents = std::any_of(deferredEvents_.cbegin(), deferredEvents_.cend(), [&](const DeferredEvent &event) { return event.pluginId == pid; });
+    if (!host_->isBusy(pid) && !pendingEvents && !drainingPanels_) {
+        pendingPanels_.remove(qid);
+        refreshPanel(pid, panelId, note);
+    } else queuePanelRefresh(qid, note, true);
+}
+
+void PluginManager::schedulePanelDrain() {
+    if (drainScheduled_ || drainingPanels_ || (pendingPanels_.isEmpty() && deferredEvents_.isEmpty())) return;
+    drainScheduled_ = true;
+    QTimer::singleShot(0, this, [this] {
+        drainScheduled_ = false;
+        flushPanels();
+    });
+}
+
+void PluginManager::flushPanels() {
+    if (drainingPanels_) return;
+    panelTimer_.stop();
+    drainingPanels_ = true;
+    const auto consumeLoad = [this](const QString &pid) {
+        // Only the first callback/render may load a cold plugin. If it unloads
+        // the state, remaining work from that batch must not recreate it.
+        for (auto &event : deferredEvents_) if (event.pluginId == pid) event.request.allowLoad = false;
+        for (auto it = pendingPanels_.begin(); it != pendingPanels_.end(); ++it)
+            if (it.key().section(QLatin1Char(':'), 0, 0) == pid) it->allowLoad = false;
+    };
+    // Remove one event at a time: callbacks may invalidate the remaining queue.
+    // A handler that keeps generating events (A<->B note.opened) must not hold
+    // the UI: run a bounded batch per turn and cap the cumulative cascade.
+    constexpr int kBatch = 64, kMaxCascade = 1024;
+    int ran = 0;
+    for (int i = 0; i < deferredEvents_.size();) {
+        if (drainCascade_ >= kMaxCascade) {
+            audit_.log(QStringLiteral("failure"), deferredEvents_.first().pluginId, QStringLiteral("runaway event cascade; %1 queued events dropped").arg(deferredEvents_.size()));
+            deferredEvents_.clear();
+            drainCascade_ = 0;
+            break;
+        }
+        if (ran >= kBatch) break;
+        const auto event = deferredEvents_[i];
+        const QString qid = event.pluginId + QLatin1Char(':') + event.panelId;
+        const bool valid = event.panelId.isEmpty()
+            ? event.request.note.valid() && event.request.generation == generations_.value(event.pluginId) &&
+                trust_.record(event.pluginId).enabled && registry_.subscribers(event.event).contains(event.pluginId)
+            : validPanel(qid, event.request);
+        if (!valid || (!host_->isLoaded(event.pluginId) && !event.request.allowLoad)) { deferredEvents_.removeAt(i); continue; }
+        if (host_->isBusy(event.pluginId)) { ++i; continue; }
+        deferredEvents_.removeAt(i);
+        ++ran; ++drainCascade_;
+        consumeLoad(event.pluginId);
+        if (event.panelId.isEmpty()) host_->deliver(event.pluginId, event.event, event.arg, event.request.note.note);
+        else host_->deliverPanelEvent(event.pluginId, event.panelId, event.event, event.arg, event.request.note.note);
+        i = 0;
+    }
+    const auto ids = pendingPanels_.keys();
+    for (const auto &qid : ids) {
+        auto it = pendingPanels_.find(qid);
+        if (it == pendingPanels_.end()) continue;
+        const QString pid = qid.section(QLatin1Char(':'), 0, 0);
+        if (!validPanel(qid, *it) || (!host_->isLoaded(pid) && !it->allowLoad)) { pendingPanels_.erase(it); continue; }
+        if (host_->isBusy(pid)) continue; // callbackFinished will schedule a drain; never spin a nested event loop.
+        const auto request = *it;
+        pendingPanels_.erase(it);
+        consumeLoad(pid);
+        refreshPanel(pid, qid.section(QLatin1Char(':'), 1), request.note.note);
+    }
+    drainingPanels_ = false;
+    if (deferredEvents_.isEmpty()) drainCascade_ = 0;
+    // A render can open a note and enqueue a newer context after its own request
+    // was consumed. Schedule another turn only for work that can make progress.
+    bool ready = std::any_of(deferredEvents_.cbegin(), deferredEvents_.cend(), [&](const DeferredEvent &event) { return !host_->isBusy(event.pluginId); });
+    for (auto it = pendingPanels_.cbegin(); !ready && it != pendingPanels_.cend(); ++it)
+        ready = !host_->isBusy(it.key().section(QLatin1Char(':'), 0, 0));
+    if (ready) schedulePanelDrain();
+}
+
 QList<CompletionItem> PluginManager::complete(const QString &trigger, const QString &query, NoteBridge *note) {
+    const auto context = noteRef(note);
+    const QString input = query;
     QList<CompletionItem> all;
     for (const auto &c : registry_.completions(trigger)) {
-        if (all.size() >= 50) break;
+        if (!context.valid() || all.size() >= 50) break;
         const auto it = entries_.constFind(c.pluginId);
         if (it == entries_.constEnd() || !trust_.record(c.pluginId).enabled) continue;
-        for (const auto &item : host_->complete(c.pluginId, c.id, query, note)) {
+        for (const auto &item : host_->complete(c.pluginId, c.id, input, note)) {
             if (all.size() >= 50) break;
             all << item;
         }
@@ -468,10 +643,13 @@ void PluginManager::requestCompletion(quint64 token, const QString &trigger, con
 }
 
 bool PluginManager::activateLink(const LinkActivation &ref, NoteBridge *note) {
+    const auto context = noteRef(note);
+    const LinkActivation link = ref;
     for (const auto &h : registry_.linkHandlers()) {
+        if (!context.valid()) break;
         const auto it = entries_.constFind(h.pluginId);
         if (it == entries_.constEnd() || !trust_.record(h.pluginId).enabled) continue;
-        if (host_->activateLink(h.pluginId, ref, note)) return true;
+        if (host_->activateLink(h.pluginId, link, note)) return true;
     }
     return false;
 }

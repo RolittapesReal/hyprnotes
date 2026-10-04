@@ -1,4 +1,5 @@
 #include "link_rename.h"
+#include "action_row.h"
 #include "controller.h"
 #include "plugin_bridges.h"
 #include "ui_common.h"
@@ -50,9 +51,23 @@ bool waitSettled(NoteSession *s, int capMs) {
     return s->state() == St::Clean;
 }
 
+namespace {
+class LinkUpdateDialog : public QDialog {
+public:
+    using QDialog::QDialog;
+protected:
+    bool event(QEvent *event) override {
+        const bool handled = QDialog::event(event);
+        if (layout() && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize))
+            setMinimumHeight(layout()->totalHeightForWidth(width()));
+        return handled;
+    }
+};
+}
+
 LinkChoice askLinkUpdate(QWidget *parent, const QString &summary, const QStringList &lines) {
-    const auto &t = ui::theme();
-    QDialog d(parent);
+    LinkUpdateDialog d(parent);
+    d.setObjectName("hnLinkUpdateDialog");
     d.setWindowTitle(QObject::tr("Update links?"));
     d.setWindowIcon(ui::appIcon());
     d.setModal(true);
@@ -62,11 +77,10 @@ LinkChoice askLinkUpdate(QWidget *parent, const QString &summary, const QStringL
     root->setSpacing(0);
     auto *head = new QWidget(&d);
     head->setObjectName("hnLinkHead");
-    head->setStyleSheet(QString("QWidget#hnLinkHead { border-left: 6px solid %1; border-bottom: 1px solid %2; }").arg(t.accent.name(), t.border.name()));
     auto *hl = new QVBoxLayout(head);
     hl->setContentsMargins(20, 12, 20, 12);
     auto *title = new QLabel(QObject::tr("Update links to this note?"), head);
-    title->setFont(ui::uiFont(16, QFont::Bold));
+    title->setProperty("hnRole", "heading");
     title->setWordWrap(true);
     hl->addWidget(title);
     root->addWidget(head);
@@ -75,6 +89,7 @@ LinkChoice askLinkUpdate(QWidget *parent, const QString &summary, const QStringL
     bl->setContentsMargins(20, 16, 20, 8);
     bl->setSpacing(8);
     auto *sum = new QLabel(summary, body);
+    sum->setTextFormat(Qt::PlainText);
     sum->setWordWrap(true);
     bl->addWidget(sum);
     auto *list = new QListWidget(body);
@@ -83,23 +98,30 @@ LinkChoice askLinkUpdate(QWidget *parent, const QString &summary, const QStringL
     list->setSelectionMode(QAbstractItemView::NoSelection);
     list->setFocusPolicy(Qt::NoFocus);
     list->setFrameShape(QFrame::NoFrame);
-    list->setStyleSheet(QString("QListWidget { border: 1px solid %1; } QListWidget::item { padding: 4px 8px; }").arg(t.border.name()));
-    list->setFixedHeight(qBound(48, 28 * int(lines.size()) + 8, 224));
+    const auto restyle = [head, list] {
+        const auto &t = ui::theme();
+        head->setStyleSheet(QString("QWidget#hnLinkHead { border-left: 6px solid %1; border-bottom: 1px solid %2; }").arg(t.accent.name(), t.border.name()));
+        list->setStyleSheet(QString("QListWidget { border: 1px solid %1; } QListWidget::item { padding: 4px 8px; }").arg(t.border.name()));
+        list->setMinimumHeight(qBound(48, (QFontMetrics(ui::uiFont(t.baseSize)).height() + 8) * list->count() + 8, 224));
+    };
+    restyle();
+    QObject::connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, &d, restyle);
     bl->addWidget(list);
     root->addWidget(body, 1);
     auto *bar = new QWidget(&d);
-    auto *bh = new QHBoxLayout(bar);
+    auto *bh = new QVBoxLayout(bar);
     bh->setContentsMargins(20, 8, 20, 16);
-    bh->addStretch(1);
-    auto *cancel = new QPushButton(QObject::tr("Cancel"), bar);
-    auto *only = new QPushButton(QObject::tr("Rename only"), bar);
-    auto *update = new QPushButton(QObject::tr("Update links"), bar);
+    auto *actions = new ui::ActionRow(bar);
+    auto *cancel = new ui::WrappingButton(QObject::tr("Cancel"), bar);
+    auto *only = new ui::WrappingButton(QObject::tr("Rename only"), bar);
+    auto *update = new ui::WrappingButton(QObject::tr("Update links"), bar);
     for (auto *b : {cancel, only, update}) b->setMinimumHeight(36);
     update->setDefault(true);
-    update->setStyleSheet(ui::accentButtonStyle() + "QPushButton { text-align: center; min-height: 36px; }");
-    bh->addWidget(cancel);
-    bh->addWidget(only);
-    bh->addWidget(update);
+    update->setProperty("hnRole", "primary");
+    actions->addButton(cancel);
+    actions->addButton(only);
+    actions->addButton(update);
+    bh->addWidget(actions);
     root->addWidget(bar);
     LinkChoice choice = LinkChoice::Cancel;
     QObject::connect(cancel, &QPushButton::clicked, &d, &QDialog::reject);

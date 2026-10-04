@@ -1,4 +1,5 @@
 #include "ui_common.h"
+#include "action_row.h"
 #include <QEvent>
 #include <QFocusEvent>
 #include <QPainter>
@@ -8,6 +9,9 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 
 namespace hn::app::ui {
 
@@ -17,8 +21,22 @@ hn::theme::AnimationPolicy g_anim;
 }
 
 const hn::theme::Theme &theme() { return g_theme; }
-void setTheme(const hn::theme::Theme &t) { g_theme = t; }
+void setTheme(const hn::theme::Theme &t) {
+    g_theme = t;
+    emit themeNotifier()->changed(); // Presentation tokens are ready; window polish is still sliced.
+}
 hn::theme::AnimationPolicy &animation() { return g_anim; }
+ThemeNotifier *themeNotifier() {
+    static QPointer<ThemeNotifier> notifier;
+    if (!notifier) notifier = new ThemeNotifier(qApp);
+    return notifier;
+}
+void setReducedMotion(bool reduced) {
+    animation().reduceMotion = reduced;
+    if (reduced)
+        for (auto *widget : QApplication::allWidgets())
+            if (auto *fade = qobject_cast<FadeOverlay *>(widget)) fade->cancel();
+}
 
 QIcon appIcon() {
     static QIcon ic;
@@ -118,17 +136,18 @@ void paintFocusRing(QPainter *p, const QRect &r) {
     p->save();
     p->setPen(QPen(theme().accent, 2));
     p->setBrush(Qt::NoBrush);
-    p->drawRect(r.adjusted(1, 1, -1, -1));
+    p->setRenderHint(QPainter::Antialiasing, theme().radius > 0);
+    p->drawRoundedRect(r.adjusted(1, 1, -1, -1), theme().radius, theme().radius);
     p->restore();
 }
 
 QString accentButtonStyle() {
     const auto &t = g_theme;
-    return QString("QPushButton { background: %1; color: %2; border: none; border-radius: 0; padding: 0 16px; min-height: 40px; font-weight: 700; text-align: left; }"
+    return QString("QPushButton { background: %1; color: %2; border: none; border-radius: %5px; padding: 0 16px; min-height: 40px; font-weight: 700; text-align: left; }"
                    "QPushButton:hover { background: %3; color: %4; }"
                    "QPushButton:pressed { background: %3; color: %4; }"
                    "QPushButton:focus { border: 2px solid %3; padding: 0 14px; }")
-        .arg(t.accent.name(), t.accentText.name(), t.text.name(), t.bg.name());
+        .arg(t.accent.name(), t.accentText.name(), t.text.name(), t.bg.name()).arg(t.radius);
 }
 
 // ---------------------------------------------------------------- IconButton
@@ -151,16 +170,17 @@ void IconButton::paintEvent(QPaintEvent *) {
     QPainter p(this);
     const auto &t = theme();
     QColor fg = t.text;
+    p.setRenderHint(QPainter::Antialiasing, t.radius > 0);
+    auto fill = [&](const QColor &color) { p.setPen(Qt::NoPen); p.setBrush(color); p.drawRoundedRect(rect(), t.radius, t.radius); };
     if (!isEnabled()) fg = t.muted;
-    if (isDown()) { p.fillRect(rect(), t.accent); fg = t.accentText; }
-    else if (underMouse() && isEnabled()) p.fillRect(rect(), t.selection);
-    else if (isChecked()) { p.fillRect(rect(), t.selection); p.fillRect(QRect(0, height() - 2, width(), 2), t.accent); }   // toggled on
+    if (isDown()) { fill(t.accent); fg = t.accentText; }
+    else if (underMouse() && isEnabled()) fill(t.selection);
+    else if (isChecked()) { fill(t.selection); p.fillRect(QRect(4, height() - 2, width() - 8, 2), t.accent); }
     const QIcon ic = ui::icon(m_icon, fg, 16);
     const QPixmap pm = ic.pixmap(QSize(16, 16), devicePixelRatioF());
     p.drawPixmap((width() - 16) / 2, (height() - 16) / 2, pm);
     if (hasFocus() && m_kbd) {
-        p.setPen(QPen(t.accent, 2));
-        p.drawRect(rect().adjusted(1, 1, -1, -1));
+        paintFocusRing(&p, rect());
     }
 }
 
@@ -174,12 +194,10 @@ void ChipButton::paintEvent(QPaintEvent *) {
     QPainter p(this);
     const auto &t = theme();
     const QColor fg = m_filled ? t.accentText : t.text;
-    if (m_filled) p.fillRect(rect(), t.accent);
-    else {
-        if (underMouse()) p.fillRect(rect(), t.selection);
-        p.setPen(QPen(t.border, 1));
-        p.drawRect(rect().adjusted(0, 0, -1, -1));
-    }
+    p.setRenderHint(QPainter::Antialiasing, t.radius > 0);
+    p.setBrush(m_filled ? t.accent : (underMouse() ? t.selection : t.surface));
+    p.setPen(QPen(m_filled ? t.accent : t.border, 1));
+    p.drawRoundedRect(rect().adjusted(0, 0, -1, -1), t.radius, t.radius);
     int x = 8;
     if (!m_icon.isEmpty()) {
         p.drawPixmap(x - 2, (height() - 12) / 2, ui::icon(m_icon, fg, 12).pixmap(QSize(12, 12), devicePixelRatioF()));
@@ -188,7 +206,7 @@ void ChipButton::paintEvent(QPaintEvent *) {
     p.setPen(fg);
     p.setFont(labelFont(10));
     p.drawText(QRect(x, 0, width() - x - 6, height()), Qt::AlignVCenter | Qt::AlignLeft, text());
-    if (hasFocus() && m_kbd) { p.setPen(QPen(t.accent, 2)); p.drawRect(rect().adjusted(1, 1, -1, -1)); }
+    if (hasFocus() && m_kbd) paintFocusRing(&p, rect());
 }
 
 // ---------------------------------------------------------------- ElidedLabel
@@ -211,12 +229,18 @@ FadeOverlay::FadeOverlay(QWidget *target) : QWidget(target), m_target(target) {
     connect(&m_anim, &QVariantAnimation::finished, this, [this] { hide(); });
 }
 
+void FadeOverlay::cancel() {
+    m_anim.stop();
+    m_alpha = 0;
+    hide();
+}
+
 void FadeOverlay::play() {
+    cancel();
     const int d = animation().duration(120);
     if (d == 0 || !m_target->isVisible()) return;
     setGeometry(m_target->rect());
     m_alpha = 255;
-    m_anim.stop();
     m_anim.setDuration(d);
     show();
     raise();
@@ -225,6 +249,7 @@ void FadeOverlay::play() {
 
 bool FadeOverlay::eventFilter(QObject *o, QEvent *e) {
     if (o == m_target && e->type() == QEvent::Resize) setGeometry(m_target->rect());
+    if (o == m_target && e->type() == QEvent::Hide) cancel();
     return false;
 }
 
@@ -243,6 +268,7 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
+        p.scale(width() / 176.0, height() / 112.0);
         const auto &t = theme();
         p.setRenderHint(QPainter::Antialiasing);
         const QPen line(t.text, 2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
@@ -298,63 +324,106 @@ protected:
 
 EmptyState::EmptyState(QWidget *parent) : QWidget(parent) {
     setAutoFillBackground(false);
-    auto *lay = new QVBoxLayout(this);
-    lay->setContentsMargins(32, 32, 32, 32);
-    lay->setSpacing(0);
-    m_art = new ArtWidget(this);
-    m_title = new QLabel(this);
-    m_body = new QLabel(this);
+    m_scroll = new QScrollArea(this);
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setWidgetResizable(false);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setFocusPolicy(Qt::StrongFocus);
+    m_content = new QWidget;
+    m_art = new ArtWidget(m_content);
+    m_title = new QLabel(m_content);
+    m_title->setWordWrap(true);
+    m_body = new QLabel(m_content);
     m_body->setWordWrap(true);
     m_body->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-    m_body->setMaximumWidth(280);
     m_title->setAlignment(Qt::AlignHCenter);
-    m_primary = new QPushButton(this);
-    m_secondary = new QPushButton(this);
+    m_primary = new WrappingButton({}, m_content);
+    m_primary->setProperty("hnRole", "primary");
+    m_secondary = new WrappingButton({}, m_content);
     m_secondary->setFlat(true);
-    lay->addStretch(3);
-    lay->addWidget(m_art, 0, Qt::AlignHCenter);
-    lay->addSpacing(24);
-    lay->addWidget(m_title, 0, Qt::AlignHCenter);
-    lay->addSpacing(8);
-    lay->addWidget(m_body, 0, Qt::AlignHCenter);
-    lay->addSpacing(24);
-    lay->addWidget(m_primary, 0, Qt::AlignHCenter);
-    lay->addSpacing(8);
-    lay->addWidget(m_secondary, 0, Qt::AlignHCenter);
-    lay->addStretch(4);
+    m_primary->setCursor(Qt::PointingHandCursor);
+    m_secondary->setCursor(Qt::PointingHandCursor);
+    m_scroll->setWidget(m_content);
+    m_content->installEventFilter(this);
+    m_scroll->viewport()->installEventFilter(this);
+    for (auto *child : m_content->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) child->installEventFilter(this);
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget *, QWidget *now) {
+        if (now && m_content->isAncestorOf(now)) m_scroll->ensureWidgetVisible(now, 0, 0);
+    });
+    connect(themeNotifier(), &ThemeNotifier::changed, this, &EmptyState::restyle);
     connect(m_primary, &QPushButton::clicked, this, &EmptyState::primaryClicked);
     connect(m_secondary, &QPushButton::clicked, this, &EmptyState::secondaryClicked);
+    restyle();
 }
 
 void EmptyState::resizeEvent(QResizeEvent *e) {
     QWidget::resizeEvent(e);
-    const int w = qBound(120, width() - 48, 280);
-    m_body->setFixedWidth(w);
-    m_body->setFixedHeight(qMax(0, m_body->heightForWidth(w)));
+    relayout();
+}
+
+void EmptyState::relayout() {
+    if (m_layingOut) return;
+    m_layingOut = true;
+    m_scroll->setGeometry(rect());
+    int contentW = width();
+    int contentH = layoutContent(contentW);
+    if (contentH > height()) {
+        contentW = qMax(1, width() - m_scroll->verticalScrollBar()->sizeHint().width());
+        contentH = layoutContent(contentW);
+    }
+    m_content->resize(contentW, contentH);
+    m_layingOut = false;
+}
+
+bool EmptyState::eventFilter(QObject *watched, QEvent *event) {
+    if ((watched == m_scroll->viewport() && event->type() == QEvent::Resize)
+        || event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange || event->type() == QEvent::LayoutRequest)
+        relayout();
+    return false;
+}
+
+int EmptyState::layoutContent(int contentW) {
+    const int margin = width() < 240 ? 8 : 24;
+    const int w = qMax(1, qMin(280, contentW - 2 * margin));
+    const int titleH = qMax(0, m_title->heightForWidth(w)), bodyH = qMax(0, m_body->heightForWidth(w));
+    int textH = titleH + bodyH + 8;
+    for (auto *b : {m_primary, m_secondary}) if (!b->isHidden()) textH += b->heightForWidth(w) + 8;
+    const int artH = qMax(0, qMin(112, height() - 2 * margin - textH - 16));
+    m_art->setFixedSize(qMin(176, w), artH);
+    // Once the artwork reaches zero, retain the full text/action height in the
+    // scrollable content rather than placing the remaining controls off-pane.
+    const int contentH = qMax(height(), textH + 2 * margin);
+    int y = qMax(margin, (contentH - textH - artH - (artH ? 16 : 0)) / 2);
+    m_art->move((contentW - m_art->width()) / 2, y); y += artH + (artH ? 16 : 0);
+    m_title->setGeometry((contentW - w) / 2, y, w, titleH); y += titleH + 8;
+    m_body->setGeometry((contentW - w) / 2, y, w, bodyH); y += bodyH;
+    for (auto *b : {m_primary, m_secondary}) if (!b->isHidden()) {
+        y += 8; const int h = b->heightForWidth(w);
+        b->setGeometry((contentW - w) / 2, y, w, h); y += h;
+    }
+    return contentH;
+}
+
+void EmptyState::restyle() {
+    const auto &t = theme();
+    m_title->setFont(uiFont(t.baseSize + 4, QFont::Bold));
+    m_body->setFont(uiFont(qMax(13, t.baseSize - 1)));
+    for (auto *button : {m_primary, m_secondary}) button->setFont(uiFont(t.baseSize, QFont::DemiBold));
+    m_title->setStyleSheet(QString("color: %1; background: transparent;").arg(t.text.name()));
+    m_body->setStyleSheet(QString("color: %1; background: transparent;").arg(t.muted.name()));
+    relayout(); update();
 }
 
 void EmptyState::setContent(Art art, const QString &title, const QString &body, const QString &primary, const QString &secondary) {
     m_art->art = art;
     m_art->update();
-    const auto &t = theme();
-    m_title->setFont(uiFont(18, QFont::Bold));
     m_title->setText(title);
-    m_title->setStyleSheet(QString("color: %1; background: transparent;").arg(t.text.name()));
-    m_body->setFont(uiFont(13));
     m_body->setText(body);
-    QResizeEvent re(size(), size());
-    resizeEvent(&re);
-    m_body->setStyleSheet(QString("color: %1; background: transparent;").arg(t.muted.name()));
     m_primary->setText(primary);
     m_primary->setVisible(!primary.isEmpty());
-    m_primary->setStyleSheet(accentButtonStyle() + "QPushButton { text-align: center; }");
-    m_primary->setIcon(primary == QObject::tr("New note") ? icon("plus", t.accentText, 16) : QIcon());
-    m_primary->setFont(uiFont(13, QFont::Bold));
-    m_primary->setMinimumWidth(176);
-    m_primary->setCursor(Qt::PointingHandCursor);
     m_secondary->setText(secondary);
     m_secondary->setVisible(!secondary.isEmpty());
-    m_secondary->setCursor(Qt::PointingHandCursor);
+    relayout();
 }
 
 } // namespace hn::app::ui
@@ -371,6 +440,7 @@ SwatchPopover::SwatchPopover(int current, QWidget *parent)
     setFocusPolicy(Qt::StrongFocus);
     setFixedSize(2 * kSwPad + 6 * kSw + 5 * kSwGap, 80);
     setAccessibleName(tr("Note colour"));
+    connect(themeNotifier(), &ThemeNotifier::changed, this, qOverload<>(&QWidget::update));
 }
 
 QString SwatchPopover::colorName(int i) {
@@ -386,7 +456,11 @@ int SwatchPopover::at(const QPoint &p) const {
 }
 
 void SwatchPopover::popup(const QPoint &g) {
-    move(g);
+    auto *screen = QGuiApplication::screenAt(g);
+    if (!screen) screen = this->screen();
+    const QRect bounds = screen->availableGeometry();
+    move(qBound(bounds.left(), g.x(), qMax(bounds.left(), bounds.right() - width() + 1)),
+         qBound(bounds.top(), g.y(), qMax(bounds.top(), bounds.bottom() - height() + 1)));
     show();
     setFocus();
 }
@@ -394,9 +468,11 @@ void SwatchPopover::popup(const QPoint &g) {
 void SwatchPopover::paintEvent(QPaintEvent *) {
     QPainter p(this);
     const auto &t = theme();
-    p.fillRect(rect(), t.surface);
+    p.fillRect(rect(), t.bg);
+    p.setRenderHint(QPainter::Antialiasing, hn::theme::popupRadius(t) > 0);
+    p.setBrush(t.surface);
     p.setPen(t.border);
-    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    p.drawRoundedRect(rect().adjusted(0, 0, -1, -1), hn::theme::popupRadius(t), hn::theme::popupRadius(t));
     p.setFont(labelFont(10));
     p.setPen(t.muted);
     p.drawText(QRect(kSwPad, 12, width() - 2 * kSwPad, 16), Qt::AlignVCenter | Qt::AlignLeft, tr("NOTE COLOUR"));
@@ -444,166 +520,6 @@ void SwatchPopover::keyPressEvent(QKeyEvent *e) {
         if (e->key() >= Qt::Key_1 && e->key() <= Qt::Key_6) { emit picked(e->key() - Qt::Key_1); close(); return; }
     }
     QWidget::keyPressEvent(e);
-}
-
-// ---------------------------------------------------------------- ShortcutSheet
-namespace {
-QStringList keyParts(const QKeySequence &ks) {
-    QStringList out;
-    const QString s = ks.toString(QKeySequence::NativeText);
-    if (s.isEmpty()) return out;
-    for (QString part : s.split('+')) if (!part.isEmpty()) out << part;
-    if (s.endsWith("++")) out << "+";
-    return out;
-}
-constexpr int kSheetRow = 28, kSheetHead = 40;
-}
-
-ShortcutSheet::ShortcutSheet(QWidget *window, const QList<Row> &rows) : QWidget(window), m_rows(rows) {
-    setObjectName("hnSheet");
-    setFocusPolicy(Qt::StrongFocus);
-    setAttribute(Qt::WA_OpaquePaintEvent);
-    setGeometry(window->rect());
-    window->installEventFilter(this);
-    m_prevFocus = QApplication::focusWidget();
-    raise();
-    show();
-    setFocus();
-}
-
-bool ShortcutSheet::isOpen(QWidget *window) { return window && window->findChild<ShortcutSheet *>("hnSheet", Qt::FindDirectChildrenOnly); }
-
-void ShortcutSheet::toggle(QWidget *window, const QMap<QString, QKeySequence> &kb, const QList<QPair<QString, QKeySequence>> &extra) {
-    if (auto *open = window->findChild<ShortcutSheet *>("hnSheet", Qt::FindDirectChildrenOnly)) { open->close(); return; }
-    QList<Row> rows;
-    const QString notes = QObject::tr("NOTES"), fmt = QObject::tr("FORMAT"), gen = QObject::tr("GENERAL"), md = QObject::tr("MARKDOWN TYPING");
-    static const QStringList noteIds{"new-note", "toggle-organizer", "search", "toggle-source", "command-palette"};
-    for (const auto &a : actionNames()) {
-        const QKeySequence ks = kb.value(a.first);
-        if (ks.isEmpty()) continue;
-        rows.append({noteIds.contains(a.first) ? notes : fmt, QObject::tr(a.second.toUtf8().constData()), keyParts(ks)});
-    }
-    for (const auto &e : extra) rows.append({QObject::tr("PLUGINS"), e.first, keyParts(e.second)});
-    rows.append({gen, QObject::tr("Show this sheet"), {"F1"}});
-    rows.append({gen, QObject::tr("Rename note (organizer)"), {"F2"}});
-    rows.append({gen, QObject::tr("Close sheet, hide toolbar"), {"Esc"}});
-    rows.append({md, QObject::tr("Heading"), {"#", "Space"}});
-    rows.append({md, QObject::tr("Bulleted list"), {"-", "Space"}});
-    rows.append({md, QObject::tr("Task"), {"[ ]", "Space"}});
-    rows.append({md, QObject::tr("Quote"), {">", "Space"}});
-    new ShortcutSheet(window, rows);
-}
-
-void ShortcutSheet::close() {
-    if (parentWidget()) parentWidget()->removeEventFilter(this);
-    if (m_prevFocus) m_prevFocus->setFocus();
-    hide();
-    deleteLater();
-}
-
-bool ShortcutSheet::event(QEvent *e) {
-    if (e->type() == QEvent::ShortcutOverride) { e->accept(); return true; }   // window shortcuts must not act on the note behind
-    return QWidget::event(e);
-}
-
-bool ShortcutSheet::eventFilter(QObject *o, QEvent *e) {
-    if (o == parentWidget() && e->type() == QEvent::Resize) setGeometry(parentWidget()->rect());
-    return false;
-}
-
-void ShortcutSheet::keyPressEvent(QKeyEvent *e) {
-    switch (e->key()) {
-    case Qt::Key_Down: m_scroll += kSheetRow; update(); return;
-    case Qt::Key_Up: m_scroll -= kSheetRow; update(); return;
-    case Qt::Key_PageDown: m_scroll += height() / 2; update(); return;
-    case Qt::Key_PageUp: m_scroll -= height() / 2; update(); return;
-    case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta: return;
-    default: close();
-    }
-}
-
-void ShortcutSheet::wheelEvent(QWheelEvent *e) {
-    m_scroll -= e->angleDelta().y() / 2;
-    update();
-}
-
-void ShortcutSheet::paintEvent(QPaintEvent *) {
-    QPainter p(this);
-    const auto &t = theme();
-    p.fillRect(rect(), t.bg);
-    const int margin = 24, headH = 56;
-    const bool two = width() >= 640;
-    const int colW = two ? (width() - 2 * margin - 32) / 2 : width() - 2 * margin;
-
-    // lay out: column-major, split near half height at a group boundary
-    struct Item { int col, y; const Row *row; QString head; };
-    QList<Item> items;
-    QString group;
-    int y = 0, col = 0, total = 0;
-    for (const auto &r : m_rows) {
-        if (r.group != group) { group = r.group; total += kSheetHead; }
-        total += kSheetRow;
-    }
-    group.clear();
-    const int half = two ? total / 2 : total + 1;
-    int colTop = 0;
-    for (const auto &r : m_rows) {
-        const bool newGroup = r.group != group;
-        if (newGroup && col == 0 && y >= half) { col = 1; y = 0; }
-        if (newGroup) { group = r.group; items.append({col, y, nullptr, group}); y += kSheetHead; }
-        items.append({col, y, &r, {}});
-        y += kSheetRow;
-        colTop = qMax(colTop, y);
-    }
-    m_contentH = colTop;
-    const int viewH = height() - headH - margin;
-    m_scroll = qBound(0, m_scroll, qMax(0, m_contentH - viewH));
-
-    p.save();
-    p.setClipRect(QRect(0, headH, width(), height() - headH));
-    for (const auto &it : items) {
-        const int x = margin + it.col * (colW + 32);
-        const int top = headH + it.y - m_scroll;
-        if (top + kSheetHead < headH || top > height()) continue;
-        if (!it.row) {
-            p.setFont(labelFont(10));
-            p.setPen(t.muted);
-            p.drawText(QRect(x, top + 8, colW, 24), Qt::AlignVCenter | Qt::AlignLeft, it.head);
-            p.fillRect(QRect(x, top + 32, colW, 1), t.border);
-            continue;
-        }
-        p.setFont(uiFont(13));
-        p.setPen(t.text);
-        const QRect lab(x, top, colW - 8, kSheetRow);
-        p.drawText(lab, Qt::AlignVCenter | Qt::AlignLeft, p.fontMetrics().elidedText(it.row->label, Qt::ElideRight, colW / 2 + 40));
-        // keycaps, right-aligned
-        const QFont kf = uiFont(11, QFont::DemiBold);
-        const QFontMetrics km(kf);
-        int kx = x + colW;
-        for (int i = it.row->keys.size() - 1; i >= 0; --i) {
-            const int w = qMax(20, km.horizontalAdvance(it.row->keys[i]) + 12);
-            kx -= w;
-            const QRect c(kx, top + 4, w, 20);
-            p.setPen(QPen(t.border, 1));
-            p.setBrush(t.surface);
-            p.drawRect(c.adjusted(0, 0, -1, -1));
-            p.setFont(kf);
-            p.setPen(t.text);
-            p.drawText(c, Qt::AlignCenter, it.row->keys[i]);
-            kx -= 4;
-        }
-    }
-    p.restore();
-
-    p.fillRect(QRect(0, 0, width(), headH), t.bg);
-    p.fillRect(QRect(0, headH - 1, width(), 1), t.border);
-    p.fillRect(QRect(0, 0, 4, headH), t.accent);
-    p.setFont(labelFont(12));
-    p.setPen(t.text);
-    p.drawText(QRect(margin, 0, width() - 2 * margin, headH), Qt::AlignVCenter | Qt::AlignLeft, tr("KEYBOARD SHORTCUTS"));
-    p.setFont(uiFont(11, QFont::DemiBold));
-    p.setPen(t.muted);
-    p.drawText(QRect(margin, 0, width() - 2 * margin, headH), Qt::AlignVCenter | Qt::AlignRight, tr("Esc to close"));
 }
 
 } // namespace hn::app::ui

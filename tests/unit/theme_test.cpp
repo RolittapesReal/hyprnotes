@@ -41,7 +41,7 @@ private slots:
         QVERIFY2(contrast(t.muted, t.surface) >= 4.5, "muted/surface");
         QVERIFY2(contrast(t.accentText, t.accent) >= 4.5, "accentText/accent");
         QVERIFY2(contrast(t.accent, t.bg) >= 3.0, "accent focus ring vs bg (non-text 3:1)");
-        QCOMPARE(t.radius, 0);
+        QCOMPARE(t.radius, 4);
         QCOMPARE(t.borderWidth, 1);
         QCOMPARE(t.padding % 2, 0);
     }
@@ -51,6 +51,16 @@ private slots:
             QVERIFY2(s.contains(w), w);
         QVERIFY(!s.contains("gradient")); QVERIFY(!s.contains("shadow")); QVERIFY(!s.contains("@"));
         QVERIFY(s.contains(QLatin1String("d92e18")));
+    }
+    void customRadiiKeepSquareAndDerivePopups() {
+        QCOMPARE(Theme{}.radius, 0);
+        for (const auto [radius, popup] : {std::pair{0, 0}, std::pair{10, 12}, std::pair{32, 32}}) {
+            writeTheme("radii", QJsonDocument(QJsonObject{{"version", 1}, {"light", QJsonObject{{"radius", radius}}}}).toJson());
+            const Theme theme = loadTheme("radii", false);
+            QVERIFY(lastThemeError().isEmpty());
+            QCOMPARE(theme.radius, radius);
+            QCOMPARE(popupRadius(theme), popup);
+        }
     }
     void loadBuiltinAndOverride() {
         writeTheme("mine", "{\"version\":1,\"base\":\"modernist\",\"light\":{\"accent\":\"#0055FF\",\"baseSize\":16},\"dark\":{\"bg\":\"#000000\"}}");
