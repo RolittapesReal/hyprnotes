@@ -350,7 +350,7 @@ void PluginService::rememberSource(const QString &id, const QString &source) {
     const QString path = m_c->stateDir() + QStringLiteral("/plugin-sources.json");
     QJsonObject o;
     if (QFile f(path); f.open(QIODevice::ReadOnly)) o = QJsonDocument::fromJson(f.readAll()).object();
-    o[id] = QFileInfo(source).absoluteFilePath();
+    o[id] = source;
     QDir().mkpath(m_c->stateDir());
     QSaveFile f(path);
     if (f.open(QIODevice::WriteOnly)) { f.write(QJsonDocument(o).toJson()); f.commit(); }
@@ -405,9 +405,9 @@ bool PluginService::enable(const QString &id, QWidget *parent, QString *message)
     return ok;
 }
 
-InstallResult PluginService::install(const QString &source, QWidget *parent, QString *message) {
+InstallResult PluginService::install(const QString &source, QWidget *parent, QString *message, const InstallOptions &opts) {
     auto *m = manager();
-    InstallResult r = m->install(source, false);
+    InstallResult r = m->install(source, opts.upgrade);
     if (!r.ok && r.errors.size() == 1 && r.errors.first().message.contains(QStringLiteral("already installed"))) {
         const QString q = tr("A plugin with this id is already installed. Replace it with this version? The new files must be approved again unless they are identical.");
         const bool yes = m_hooks.confirm ? m_hooks.confirm(r.id, q)
@@ -420,7 +420,7 @@ InstallResult PluginService::install(const QString &source, QWidget *parent, QSt
         if (message) *message = tr("Not installed: %1").arg(msgs.join(QStringLiteral("; ")));
         return r;
     }
-    rememberSource(r.id, source);
+    rememberSource(r.id, opts.sourceLabel.isEmpty() ? QFileInfo(source).absoluteFilePath() : opts.sourceLabel);
     if (r.upgraded && r.consentKept) { if (message) *message = tr("Updated %1; the files are identical to the ones you approved.").arg(nameOf(r.id)); return r; }
     const bool ok = review(r.id, parent);
     if (message) *message = ok ? tr("Installed and enabled %1.").arg(nameOf(r.id)) : tr("Installed %1 but not enabled. Review and enable it from the Plugins page.").arg(nameOf(r.id));

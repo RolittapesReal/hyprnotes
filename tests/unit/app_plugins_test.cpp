@@ -312,6 +312,35 @@ hn.on("selection.changed", function(p) hn.log("EV selection " .. p) end)
         QCOMPARE(c.plugins().manager()->info("grow").status, Status::NeedsConsent);   // declined: disabled, not silently kept
     }
 
+    void install_options_upgrade_skips_replace_question() {
+        Lib l;
+        const QString src = l.dir.filePath("src");
+        mk(src, "grow", {"note.read"}, "hn.command{ id='c', title='C', run=function() end }");
+        AppController c(accepting(l));
+        QString msg;
+        QVERIFY(c.plugins().install(src + "/grow", nullptr, &msg).ok);
+        mk(src, "grow", {"note.read"}, "hn.command{ id='c', title='C2', run=function() end }");
+        c.plugins().hooks().confirm = [](const QString &, const QString &) { QTest::qFail("confirm must not be asked", __FILE__, __LINE__); return false; };
+        const QString label = "marketplace: https://example.invalid/x";
+        const auto r = c.plugins().install(src + "/grow", nullptr, &msg, InstallOptions{true, label});
+        QVERIFY2(r.ok && r.upgraded, qPrintable(msg));
+        QCOMPARE(c.plugins().sourceOf("grow"), label);
+    }
+
+    void install_options_default_still_asks() {
+        Lib l;
+        const QString src = l.dir.filePath("src");
+        mk(src, "grow", {"note.read"}, "hn.command{ id='c', title='C', run=function() end }");
+        AppController c(accepting(l));
+        QString msg;
+        QVERIFY(c.plugins().install(src + "/grow", nullptr, &msg).ok);
+        mk(src, "grow", {"note.read"}, "hn.command{ id='c', title='C2', run=function() end }");
+        int asked = 0;
+        c.plugins().hooks().confirm = [&](const QString &, const QString &) { ++asked; return true; };
+        QVERIFY2(c.plugins().install(src + "/grow", nullptr, &msg).ok, qPrintable(msg));
+        QCOMPARE(asked, 1);
+    }
+
     // ---------------------------------------------------------------- bridges
     void plugin_callback_is_one_undo_step_and_goes_through_autosave() {
         Lib l;

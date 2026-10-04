@@ -308,6 +308,16 @@ A callback that overruns its budget is stopped, counts as a failure and its erro
 - **`pattern too complex`**: your pattern backtracks too much for the 4 000 000-step budget; make it more specific (anchor it with `^`, avoid several `.-` in a row).
 - Run `hyprnotes --check-plugin DIR` after every edit; it catches syntax errors before you load anything.
 
+## Browse and install from the registry
+
+The Plugins page has a Browse tab next to Installed. The first time you open it, Hyprnotes shows a notice naming the registry host. Nothing is fetched until you choose Continue; Back returns to Installed without any request. The list is cached under `$XDG_CACHE_HOME/hyprnotes/market` (usually `~/.cache/hyprnotes/market`), so Browse still shows the last list when you are offline.
+
+Installing from Browse works like the Manual path. The package is downloaded, checked against the registry entry and its own manifest, and installed disabled. The consent dialog then lists the permissions. The plugin is enabled only if you accept there; if you cancel, it stays installed but disabled, and you can review it later from the Installed tab.
+
+Updates are manual. Browse marks an entry as "Update available", and applying it always shows the consent dialog again. Native plugins are listed with a warning chip but cannot be installed from Browse until releases are signed; the Manual file and folder install is unchanged.
+
+The registry checks a SHA-256 hash, which only proves that the download matches the index. It does not prove that the plugin is trustworthy, and the registry is not a security audit. Read the permissions before you accept.
+
 ## Packing and sharing
 
 `hyprnotes --pack-plugin DIR` produces a `.hnplugin` file: a zip archive of the plugin folder (`plugin.json` at the top level). People install it from the Plugins page or with a folder. Installed plugins live in `$XDG_DATA_HOME/hyprnotes/plugins/<id>/`.

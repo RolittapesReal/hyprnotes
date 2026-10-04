@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # Release owner: replace with the 40-hex primary fingerprint of the release signing key before publishing.
-PINNED_FPR="425FEA9801A90AC5C5857A34A8607951FB5383CC"
+PINNED_FPR="1B42F4BE4E8C0722BE5D6EBD40A7D03B60FA39B5"
 PKGNAME=hyprnotes
 ARCH=x86_64
 

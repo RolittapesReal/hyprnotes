@@ -119,7 +119,7 @@ private slots:
         QVERIFY(r.setup(fixture("hello")));
         for (int i = 0; i < 3; ++i) QVERIFY(r.mgr->runCommand("hello:count", &r.note));
         QVERIFY(r.mgr->runCommand("hello:version", &r.note));
-        QCOMPARE(r.logsOf("hello"), (QStringList{"count=1", "count=2", "count=3", "version=0.1.0"}));
+        QCOMPARE(r.logsOf("hello"), (QStringList{"count=1", "count=2", "count=3", "version=0.2.0"}));
         // persisted per plugin in the state dir, and reloaded by a fresh manager
         QVERIFY(QFileInfo::exists(r.env.state() + "/plugin-data/hello.json"));
         r.mgr->host()->unload("hello");

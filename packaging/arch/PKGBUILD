@@ -1,7 +1,7 @@
 # Maintainer: Hyprnotes contributors
 # Built from a local source tarball by packaging/build-package.sh (which fills in sha256sums).
 pkgname=hyprnotes
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Markdown notes and sticky notes for Hyprland (Qt6)'
 arch=('x86_64')

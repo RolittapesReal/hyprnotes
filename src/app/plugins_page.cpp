@@ -1,6 +1,7 @@
 #include "plugins_page.h"
 #include "action_row.h"
 #include "consent_dialog.h"
+#include "market_page.h"
 #include "ui_common.h"
 #include <QCheckBox>
 #include <QDesktopServices>
@@ -21,6 +22,8 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QStackedWidget>
+#include <QTabBar>
 #include <QResizeEvent>
 #include <QStyledItemDelegate>
 #include <QUrl>
@@ -186,6 +189,24 @@ PluginsPage::PluginsPage(AppController *c, QWidget *parent) : QWidget(parent), m
     wl->addWidget(m_warning, 1);
     root->addWidget(warn);
 
+    // The warning stays above the tabs so it is visible on both. The existing page becomes the Installed pane unchanged.
+    m_tabs = new QTabBar(this);
+    m_tabs->setObjectName("hnPluginsTabs");
+    m_tabs->setAccessibleName(tr("Plugins"));
+    m_tabs->setExpanding(false);
+    m_tabs->setDrawBase(true);
+    m_tabs->addTab(tr("Installed"));
+    m_tabs->addTab(tr("Browse"));
+    m_tabs->setTabToolTip(1, tr("Find plugins in the community registry"));
+    root->addWidget(m_tabs);
+    m_stack = new QStackedWidget(this);
+    auto *installedPane = new QWidget(m_stack);
+    auto *ilay = new QVBoxLayout(installedPane);
+    ilay->setContentsMargins(0, 8, 0, 0);
+    ilay->setSpacing(8);
+    m_stack->addWidget(installedPane);
+    root->addWidget(m_stack, 1);
+
     auto *bar = new ui::ActionRow(this);
     auto *install = new ui::WrappingButton(tr("Install plugin…"), this);
     install->setObjectName("hnPluginInstall");
@@ -206,13 +227,13 @@ PluginsPage::PluginsPage(AppController *c, QWidget *parent) : QWidget(parent), m
     m_note->setTextFormat(Qt::PlainText);
     m_note->setObjectName("hnPluginsNote");
     bar->addButton(install);
-    root->addWidget(bar);
-    root->addWidget(m_note);
+    ilay->addWidget(bar);
+    ilay->addWidget(m_note);
     m_note->hide();
     auto *dropHint = new QLabel(tr("Or drop a .hnplugin file or a plugin folder on this window."), this);
     dropHint->setProperty("hnRole", "hint");
     dropHint->setWordWrap(true);
-    root->addWidget(dropHint);
+    ilay->addWidget(dropHint);
 
     auto *row = new QBoxLayout(QBoxLayout::LeftToRight);
     m_row = row;
@@ -236,12 +257,27 @@ PluginsPage::PluginsPage(AppController *c, QWidget *parent) : QWidget(parent), m
     scroll->setWidget(m_detail);
     row->addWidget(m_list);
     row->addWidget(scroll, 1);
-    root->addLayout(row, 1);
+    ilay->addLayout(row, 1);
 
     connect(m_list, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *cur) {
         m_sel = cur ? cur->data(IdRole).toString() : QString();
         rebuildDetail();
     });
+    // The stack sizes to its largest page, so the hidden one must not claim space.
+    connect(m_tabs, &QTabBar::currentChanged, this, [this](int index) {
+        if (index == 1 && !m_browse) {
+            m_browse = new MarketPage(m_c, m_stack);
+            m_browse->setObjectName("hnMarketPage");
+            m_stack->addWidget(m_browse);
+            connect(m_browse, &MarketPage::installed, this, [this](const QString &id) { m_loaded = true; refresh(); select(id); });
+            connect(m_browse, &MarketPage::backRequested, this, &PluginsPage::showInstalled);
+        }
+        m_stack->setCurrentIndex(index);
+        for (int i = 0; i < m_stack->count(); ++i)
+            m_stack->widget(i)->setSizePolicy(i == index ? QSizePolicy::Preferred : QSizePolicy::Ignored, i == index ? QSizePolicy::Preferred : QSizePolicy::Ignored);
+        if (index == 1) m_browse->activate();
+    });
+    m_stack->widget(0)->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     connect(&c->plugins(), &PluginService::changed, this, [this] { if (m_loaded) refresh(); });
     connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, this, &PluginsPage::restyle);
     restyle();
@@ -257,6 +293,9 @@ void PluginsPage::arrange() {
     m_list->setMinimumHeight(narrow ? m_list->maximumHeight() : 160);
     m_detailLay->setContentsMargins(narrow ? 0 : 20, 0, 4, 0);
 }
+
+void PluginsPage::showBrowse() { m_tabs->setCurrentIndex(1); }
+void PluginsPage::showInstalled() { m_tabs->setCurrentIndex(0); }
 
 void PluginsPage::resizeEvent(QResizeEvent *e) {
     QWidget::resizeEvent(e);

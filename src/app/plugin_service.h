@@ -33,6 +33,9 @@ struct PluginAction {
     QString qid, title, pluginId, pluginName, key, icon, where;
 };
 
+// upgrade: replace an installed plugin without asking again. sourceLabel: what sourceOf() reports afterwards (default: the source).
+struct InstallOptions { bool upgrade = false; QString sourceLabel; };
+
 class PluginService : public QObject {
     Q_OBJECT
 public:
@@ -85,7 +88,7 @@ public:
     // ---- flows (UI) ----
     ConsentRequest requestFor(const QString &id) const;
     bool review(const QString &id, QWidget *parent);       // consent dialog -> consent + enable
-    hn::plugins::InstallResult install(const QString &source, QWidget *parent, QString *message);   // install, then review
+    hn::plugins::InstallResult install(const QString &source, QWidget *parent, QString *message, const InstallOptions &opts = {});   // install, then review
     bool enable(const QString &id, QWidget *parent, QString *message = nullptr);   // consent dialog first when consent is missing/invalid
     QString auditText(int maxLines = 300) const;
     QString sourceOf(const QString &id) const;

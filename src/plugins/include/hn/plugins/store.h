@@ -63,6 +63,8 @@ struct CheckResult {
 };
 // Validates a plugin folder exactly as the installer would (manifest, caps, symlinks, UTF-8, native libs, Lua syntax).
 CheckResult checkDirectory(const QString &dir, const QString &appVersion = QString::fromLatin1(kAppVersion));
+// Like checkDirectory but for a .hnplugin / archive file: extracts into a temp folder (same caps as install) and checks it.
+CheckResult checkPackage(const QString &file, const QString &appVersion = QString::fromLatin1(kAppVersion));
 
 struct InstallResult {
     bool ok = false;

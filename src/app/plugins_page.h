@@ -10,8 +10,12 @@ class QListWidget;
 class QPushButton;
 class QVBoxLayout;
 class QBoxLayout;
+class QStackedWidget;
+class QTabBar;
 
 namespace hn::app {
+
+class MarketPage;
 
 class PluginsPage : public QWidget {
     Q_OBJECT
@@ -31,6 +35,10 @@ public:
     bool installPath(const QString &path);         // install + consent flow (shared by the dialog, drag and drop and tests)
     void showAudit(const QString &id);             // non-modal audit viewer
     void refresh();
+    void showBrowse();                             // switch to the Browse tab (builds the page on first use)
+    void showInstalled();
+    MarketPage *browse() const { return m_browse; }
+    QTabBar *tabs() const { return m_tabs; }
     static QString chipFor(hn::plugins::Status s);
 protected:
     void showEvent(QShowEvent *) override;
@@ -46,6 +54,9 @@ private:
     QLabel *m_warning, *m_note;
     QLabel *m_warningIcon, *m_chips = nullptr;
     QWidget *m_warningFrame;
+    QTabBar *m_tabs;
+    QStackedWidget *m_stack;
+    MarketPage *m_browse = nullptr;
     QBoxLayout *m_row;
     QListWidget *m_list;
     QWidget *m_detail;

@@ -221,6 +221,24 @@ bool extractArchive(const QString &file, const QString &dest, QList<PluginError>
 PackageInstaller::PackageInstaller(QString d, TrustStore *t, AuditLog *a, QString v)
     : dir_(std::move(d)), appVersion_(std::move(v)), trust_(t), audit_(a) {}
 
+// Tolerates an "archive of the folder itself": plugin.json one level down, nothing else at the top.
+static QString contentRoot(const QString &content) {
+    if (QFileInfo::exists(content + QStringLiteral("/plugin.json"))) return content;
+    const auto subs = QDir(content).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    if (subs.size() == 1 && QFileInfo::exists(subs[0].filePath() + QStringLiteral("/plugin.json")) && QDir(content).entryInfoList(QDir::Files).isEmpty())
+        return subs[0].filePath();
+    return content;
+}
+
+CheckResult checkPackage(const QString &file, const QString &appVersion) {
+    CheckResult r;
+    QTemporaryDir tmp;
+    if (!tmp.isValid()) { r.errors.append({QFileInfo(file).fileName(), QStringLiteral("cannot create a temporary folder")}); return r; }
+    const QString content = tmp.path() + QStringLiteral("/content");
+    if (!extractArchive(file, content, &r.errors, QFileInfo(file).fileName())) return r;
+    return checkDirectory(contentRoot(content), appVersion);
+}
+
 InstallResult PackageInstaller::install(const QString &source, bool allowUpgrade) {
     InstallResult r;
     const QString who = QFileInfo(source).fileName();
@@ -245,12 +263,7 @@ InstallResult PackageInstaller::install(const QString &source, bool allowUpgrade
     } else if (!extractArchive(source, content, &r.errors, who)) {
         return r;
     }
-    QString root = content;
-    if (!QFileInfo::exists(root + QStringLiteral("/plugin.json"))) {  // tolerate "archive of the folder itself"
-        const auto subs = QDir(content).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
-        if (subs.size() == 1 && QFileInfo::exists(subs[0].filePath() + QStringLiteral("/plugin.json")) && QDir(content).entryInfoList(QDir::Files).isEmpty())
-            root = subs[0].filePath();
-    }
+    const QString root = contentRoot(content);
     const CheckResult c = checkDirectory(root, appVersion_);
     if (!c.ok) { r.errors = c.errors; return r; }
     r.id = c.manifest.id;

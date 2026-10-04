@@ -277,6 +277,21 @@ void AppController::rootChanged() {
     emit notesChanged();
 }
 
+hn::plugins::MarketClient &AppController::market() {
+    if (!m_market)
+        m_market = std::make_unique<hn::plugins::MarketClient>(marketIndexUrl(),
+                                                               m_cacheDir, nullptr, m_opt.marketUrlPolicy ? m_opt.marketUrlPolicy : hn::plugins::UrlPolicy(hn::plugins::httpsOnly));
+    return *m_market;
+}
+
+bool AppController::marketNoticeAcknowledged() const { return QFileInfo(statePath(QStringLiteral("market-notice-ack"))).isFile(); }
+
+bool AppController::acknowledgeMarketNotice() {
+    QDir().mkpath(m_stateDir);
+    QFile f(statePath(QStringLiteral("market-notice-ack")));
+    return f.open(QIODevice::WriteOnly) && f.write("1") == 1 && f.flush();
+}
+
 LibraryIndex *AppController::index() {
     if (!m_index) {
         m_index = std::make_unique<LibraryIndex>(m_repo->root(), m_cacheDir);

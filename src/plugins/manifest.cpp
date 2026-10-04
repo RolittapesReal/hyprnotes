@@ -80,7 +80,11 @@ int compareVersions(const QString &a, const QString &b) {
     const auto x = verParts(a), y = verParts(b);
     for (int i = 0; i < 3; ++i)
         if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
-    return 0;
+    // A pre-release sorts below the same release; two pre-releases compare as plain text.
+    const QString pa = a.section(QLatin1Char('-'), 1), pb = b.section(QLatin1Char('-'), 1);
+    if (pa.isEmpty() != pb.isEmpty()) return pa.isEmpty() ? 1 : -1;
+    const int c = QString::compare(pa, pb);
+    return c < 0 ? -1 : c > 0 ? 1 : 0;
 }
 
 static bool hasCtl(const QString &s, bool allowNl = false) {

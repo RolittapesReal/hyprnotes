@@ -3,12 +3,12 @@ pkg_check_modules(LUA REQUIRED IMPORTED_TARGET lua)
 pkg_check_modules(LIBARCHIVE REQUIRED IMPORTED_TARGET libarchive)
 
 add_library(hn_plugins STATIC
-  manifest.cpp registry.cpp trust.cpp package.cpp luahost.cpp luapattern.cpp luapattern.h manager.cpp
-  include/hn/plugins/types.h include/hn/plugins/store.h include/hn/plugins/runtime.h)
+  manifest.cpp registry.cpp trust.cpp package.cpp luahost.cpp luapattern.cpp luapattern.h manager.cpp market_index.cpp market_client.cpp market_install.cpp
+  include/hn/plugins/types.h include/hn/plugins/store.h include/hn/plugins/runtime.h include/hn/plugins/market.h)
 target_include_directories(hn_plugins PUBLIC include)
-target_link_libraries(hn_plugins PUBLIC Qt6::Core PRIVATE PkgConfig::LUA PkgConfig::LIBARCHIVE PkgConfig::LUA)
+target_link_libraries(hn_plugins PUBLIC Qt6::Core Qt6::Network PRIVATE PkgConfig::LUA PkgConfig::LIBARCHIVE PkgConfig::LUA)
 
-foreach(t manifest package trust runtime sandbox hardening examples docs v2 official)
+foreach(t manifest package trust runtime sandbox hardening examples docs v2 official market_index market_client market_install)
   add_executable(plugins_${t}_test ${CMAKE_SOURCE_DIR}/tests/unit/plugins_${t}_test.cpp)
   target_link_libraries(plugins_${t}_test PRIVATE hn_plugins Qt6::Test PkgConfig::LIBARCHIVE PkgConfig::LUA)
   target_compile_definitions(plugins_${t}_test PRIVATE HN_PLUGIN_FIXTURES="${CMAKE_SOURCE_DIR}/tests/unit/fixtures/plugins"

@@ -9,6 +9,7 @@
 #include "hn/platform/tray_controller.h"
 #include "hn/platform/window_identity.h"
 #include "hn/platform/window_placement.h"
+#include "hn/plugins/market.h"
 #include "link_rename.h"
 #include "note_session.h"
 #include "note_state.h"
@@ -36,6 +37,8 @@ struct ControllerOptions {
     QString notesDir;                      // explicit override (HN_NOTES_DIR); empty => config / first run
     QString configPath, stateDir, cacheDir, modsDir, modsEnabledPath;   // empty => hn::core::paths
     QString pluginsDir;                    // empty => $XDG_DATA_HOME/hyprnotes/plugins (beside modsDir when that is overridden)
+    QString marketIndexUrl;                // empty => the production registry URL (tests inject a loopback server)
+    hn::plugins::UrlPolicy marketUrlPolicy;   // empty => https only (tests allow loopback http)
     PluginHooks pluginHooks;               // test seams for the plugin dialogs (consent, prompt, confirm, pick)
     bool background = false;               // --background: nothing is opened or loaded eagerly
     bool useTray = true;
@@ -72,6 +75,12 @@ public:
     hn::core::LibraryIndex *index();               // lazy: created (and synced) on first use
     bool hasIndex() const { return bool(m_index); }
     PluginService &plugins() { return *m_plugins; }
+    hn::plugins::MarketClient &market();           // created on first call; nothing touches the network before the first request
+    bool marketCreated() const { return bool(m_market); }
+    bool marketNoticeAcknowledged() const;         // <stateDir>/market-notice-ack exists
+    bool acknowledgeMarketNotice();                // false when the marker could not be written
+    QString cacheDir() const { return m_cacheDir; }
+    QString marketIndexUrl() const { return m_opt.marketIndexUrl.isEmpty() ? hn::plugins::MarketClient::defaultIndexUrl() : m_opt.marketIndexUrl; }
     hn::platform::TrayController *tray() { return m_tray.get(); }
     hn::platform::HyprlandIpc *ipc() { return m_ipc.get(); }
     hn::platform::WindowRegistry &registry() { return m_registry; }
@@ -215,6 +224,7 @@ private:
     hn::theme::Theme m_theme;
     std::unique_ptr<hn::core::NoteRepository> m_repo;
     std::unique_ptr<hn::core::LibraryIndex> m_index;
+    std::unique_ptr<hn::plugins::MarketClient> m_market;
     PluginService *m_plugins = nullptr;   // QObject child; deleted explicitly after the sessions
     QString m_modsDir, m_lastNotice;
     QMap<QString, QMap<QString, QString>> m_themeOverrides;   // plugin -> token -> #rrggbb

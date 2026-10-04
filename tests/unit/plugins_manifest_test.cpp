@@ -110,7 +110,9 @@ private slots:
         QCOMPARE(compareVersions("0.1.0", "0.1.0"), 0);
         QCOMPARE(compareVersions("0.2.0", "0.10.0"), -1);
         QCOMPARE(compareVersions("1.0.0", "0.99.99"), 1);
-        QCOMPARE(compareVersions("1.0.0-beta", "1.0.0"), 0);
+        QCOMPARE(compareVersions("1.0.0-beta", "1.0.0"), -1);
+        QCOMPARE(compareVersions("1.0.0", "1.0.0-beta"), 1);
+        QCOMPARE(compareVersions("1.0.0-beta", "1.0.0-beta"), 0);
     }
     void httpPolicy_data() {
         QTest::addColumn<QString>("url");
