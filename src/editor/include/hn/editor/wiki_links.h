@@ -46,6 +46,7 @@ struct CompletionItem {
     QString detail;        // optional muted text, right aligned
     QString insert;        // REPLACES trigger+query (so include "[[" and "]]" yourself); plain text, no Markdown parsing
     int cursorOffset = -1; // caret position inside `insert` (UTF-16 units); -1 = after it
+    bool markdown = false; // insert through the Markdown importer (visual mode) instead of as plain text
 };
 
 } // namespace hn::editor

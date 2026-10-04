@@ -28,7 +28,7 @@ foreach(src ${HN_APP_TESTS})
   add_executable(${t} ${src})
   target_link_libraries(${t} PRIVATE hn_app Qt6::Test)
   target_include_directories(${t} PRIVATE ${CMAKE_SOURCE_DIR}/tests/unit)
-  target_compile_definitions(${t} PRIVATE HN_BIN="$<TARGET_FILE:hyprnotes>" HN_SOURCE_DIR="${CMAKE_SOURCE_DIR}" HN_PLUGIN_FIXTURES="${CMAKE_SOURCE_DIR}/tests/unit/fixtures/plugins"
+  target_compile_definitions(${t} PRIVATE HN_BIN="$<TARGET_FILE:hyprnotes>" HN_SOURCE_DIR="${CMAKE_SOURCE_DIR}" HN_PLUGINS_DIR="${HN_PLUGINS_DIR}" HN_PLUGIN_FIXTURES="${CMAKE_SOURCE_DIR}/tests/unit/fixtures/plugins"
     HN_EXAMPLE_MOD_DIR="${CMAKE_BINARY_DIR}/example-uppercase-selection" HN_EXAMPLE_MOD_SRC="${CMAKE_SOURCE_DIR}/examples/mods/uppercase-selection")
   add_dependencies(${t} hyprnotes)
   if(TARGET hn_example_uppercase_selection)

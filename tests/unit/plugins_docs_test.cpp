@@ -90,7 +90,7 @@ private slots:
                 }
                 for (const auto &c : regs->completions) {
                     QString msg;
-                    QVERIFY2(!r.mgr->complete(c.trigger, "a", &r.note).isEmpty(), qPrintable(where + ": completion " + c.id + " returned nothing"));
+                    QVERIFY2(!r.mgr->complete(c.trigger, "a", &r.note, true).isEmpty(), qPrintable(where + ": completion " + c.id + " returned nothing"));
                     ++completions;
                 }
                 if (!regs->linkHandlers.isEmpty()) {

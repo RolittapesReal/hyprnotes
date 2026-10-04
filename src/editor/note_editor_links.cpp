@@ -581,6 +581,15 @@ bool NoteEditor::acceptCompletion(int row)
     const int start = l.start, end = c.position();
     if (start > end || c.hasSelection() || c.document()->findBlock(start) != c.block()) { dismissCompletions(); return false; }
     dismissCompletions();   // before editing: the edit's own caret moves must not re-enter the session
+    if (it.markdown && vis) {
+        QTextCursor sel = m_vis->textCursor();
+        sel.setPosition(start);
+        sel.setPosition(end, QTextCursor::KeepAnchor);
+        m_vis->setTextCursor(sel);
+        insertMarkdown(it.insert, false);   // replaces the selected trigger+query through the Markdown importer
+        emit completionAccepted(it);
+        return true;
+    }
     {
         auto scope = m_rec.begin(TxKind::Format, it.insert.contains(QLatin1Char('\n')) ? WindowMode::Wide : WindowMode::Selection);
         QTextCursor e(c.document());

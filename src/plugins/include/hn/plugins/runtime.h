@@ -60,7 +60,7 @@ public:
     bool renderPanel(const QString &id, const QString &panelId, NoteBridge *note, QList<PanelBlock> *out, QString *err = nullptr);
     bool panelClick(const QString &id, const QString &panelId, int token, NoteBridge *note, QString *err = nullptr);
     void deliverPanelEvent(const QString &id, const QString &panelId, const QString &event, const QString &arg, NoteBridge *note);
-    QList<CompletionItem> complete(const QString &id, const QString &completeId, const QString &query, NoteBridge *note, int *dropped = nullptr, QString *err = nullptr);
+    QList<CompletionItem> complete(const QString &id, const QString &completeId, const QString &query, NoteBridge *note, int *dropped = nullptr, QString *err = nullptr, bool atLineStart = false);
     bool activateLink(const QString &id, const LinkActivation &ref, NoteBridge *note);  // true = a handler consumed the activation
 
     bool setSetting(const QString &id, const QString &settingId, const QVariant &v);
@@ -165,8 +165,8 @@ public:
     void setPanelActive(const QString &pluginId, const QString &panelId, bool active);
     void flushPanels();  // runs queued hn.panel_refresh requests now
     // Items from every plugin that registered `trigger` (at most 50 in total, 20 ms per plugin).
-    QList<CompletionItem> complete(const QString &trigger, const QString &query, NoteBridge *note);
-    void requestCompletion(quint64 token, const QString &trigger, const QString &query, NoteBridge *note);   // -> EditorHooksBridge::completionReply
+    QList<CompletionItem> complete(const QString &trigger, const QString &query, NoteBridge *note, bool atLineStart = false);
+    void requestCompletion(quint64 token, const QString &trigger, const QString &query, NoteBridge *note, bool atLineStart = false);   // -> EditorHooksBridge::completionReply
     bool activateLink(const LinkActivation &ref, NoteBridge *note);                                          // true = handled by a plugin
     void requestLinkActivation(quint64 token, const LinkActivation &ref, NoteBridge *note);                  // -> EditorHooksBridge::linkActivationReply
 

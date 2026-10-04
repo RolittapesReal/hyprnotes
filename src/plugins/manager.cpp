@@ -622,7 +622,7 @@ void PluginManager::flushPanels() {
     if (ready) schedulePanelDrain();
 }
 
-QList<CompletionItem> PluginManager::complete(const QString &trigger, const QString &query, NoteBridge *note) {
+QList<CompletionItem> PluginManager::complete(const QString &trigger, const QString &query, NoteBridge *note, bool atLineStart) {
     const auto context = noteRef(note);
     const QString input = query;
     QList<CompletionItem> all;
@@ -630,15 +630,15 @@ QList<CompletionItem> PluginManager::complete(const QString &trigger, const QStr
         if (!context.valid() || all.size() >= 50) break;
         const auto it = entries_.constFind(c.pluginId);
         if (it == entries_.constEnd() || !trust_.record(c.pluginId).enabled) continue;
-        for (const auto &item : host_->complete(c.pluginId, c.id, input, note)) {
+        for (const auto &item : host_->complete(c.pluginId, c.id, input, note, nullptr, nullptr, atLineStart)) {
             if (all.size() >= 50) break;
             all << item;
         }
     }
     return all;
 }
-void PluginManager::requestCompletion(quint64 token, const QString &trigger, const QString &query, NoteBridge *note) {
-    const auto items = complete(trigger, query, note);
+void PluginManager::requestCompletion(quint64 token, const QString &trigger, const QString &query, NoteBridge *note, bool atLineStart) {
+    const auto items = complete(trigger, query, note, atLineStart);
     if (auto *e = cfg_.bridges.editor) e->completionReply(token, items);
 }
 

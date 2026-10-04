@@ -172,7 +172,7 @@ public:
     virtual void updatePanel(const QString &qualifiedId, const QList<PanelBlock> &blocks, const QString &error = QString()) { Q_UNUSED(qualifiedId) Q_UNUSED(blocks) Q_UNUSED(error) }
     virtual void removePanel(const QString &qualifiedId) { Q_UNUSED(qualifiedId) }
 };
-struct CompletionItem { QString pluginId, label, detail, insert; int cursorOffset = -1; };  // cursorOffset: characters into insert, -1 = end
+struct CompletionItem { QString pluginId, label, detail, insert; int cursorOffset = -1; bool markdown = false; };  // cursorOffset: characters into insert, -1 = end; markdown: insert through the Markdown importer
 struct LinkActivation { QString kind, target, alias, anchor, resolved; };                   // resolved = note path or empty
 // Implemented by the editor. Replies to PluginManager::requestCompletion / requestLinkActivation.
 class EditorHooksBridge {

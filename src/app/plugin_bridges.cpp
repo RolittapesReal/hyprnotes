@@ -140,7 +140,18 @@ bool PluginLibraryBridge::write(const QString &path, const QString &text) {
         return true;
     }
     auto &repo = m_c->repo();
-    if (!QFileInfo::exists(repo.absolutePath(path))) return false;   // create() is the way to make notes
+    if (!QFileInfo::exists(repo.absolutePath(path))) {   // a missing note is created at exactly this path, folders included
+        const QFileInfo fi(path);
+        QString folder = fi.path();
+        if (folder == ".") folder.clear();
+        QString err;
+        const QString rel = repo.create(folder, fi.completeBaseName(), text.toUtf8(), &err);
+        if (rel.isEmpty()) return false;
+        if (rel != path) { repo.remove(rel); return false; }   // the library renamed it (sanitizing): not the name the plugin asked for
+        if (m_c->hasIndex()) m_c->index()->updatePath(rel);
+        emit m_c->notesChanged();
+        return true;
+    }
     const auto snap = repo.read(path);   // sets the baseline: an external change since now is detected as a conflict
     if (!snap.ok) return false;
     const bool ok = saveAndWait(repo, path, text.toUtf8(), snap.revision) == SaveOutcome::Saved;

@@ -9,6 +9,9 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Sql Svg Test)
 enable_testing()
+# The plugins Hyprnotes maintains live in their own repository next to this one; the plugin tests read them from here
+# and skip themselves when the folder is absent.
+set(HN_PLUGINS_DIR "${CMAKE_SOURCE_DIR}/../hyprnotes-plugins" CACHE PATH "folder of the hyprnotes-plugins repository (used by tests only)")
 add_compile_options(-Wall -Wextra -Wpedantic)
 # Each module owns its own CMakeLists.txt and defines a static library hn_<module>.
 set(HN_MODULES core;theme;editor;platform;mods;plugins;app CACHE STRING "modules to build (for parallel development)")

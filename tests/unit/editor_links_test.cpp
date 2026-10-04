@@ -498,6 +498,39 @@ private slots:
         QVERIFY(f.ed.undo());
         QVERIFY(f.ed.sourceEdit()->toPlainText().endsWith(QStringLiteral("\n/q")));
     }
+    void markdownItemsInsertThroughImporter()
+    {
+        {   // visual + markdown: "# Title" becomes a level-1 heading
+            LFx f({}, false, false);
+            f.ed.setCompletionTriggers({"/"});
+            f.text("/");
+            f.ed.showCompletions({{"H1", "", "# Title", -1, true}});
+            f.key(Qt::Key_Return);
+            QCOMPARE(f.md().trimmed(), QStringLiteral("# Title"));
+            QCOMPARE(f.v->document()->firstBlock().text(), QStringLiteral("Title"));
+            QCOMPARE(f.v->textCursor().position(), f.v->document()->firstBlock().length() - 1);   // caret at the end of the inserted text
+            QVERIFY(f.ed.undo());
+            QCOMPARE(f.plain(), QStringLiteral("/"));   // the typed slash is back in ONE undo step
+            QCOMPARE(f.v->document()->blockCount(), 1);
+        }
+        {   // visual, not markdown: stays literal
+            LFx f({}, false, false);
+            f.ed.setCompletionTriggers({"/"});
+            f.text("/");
+            f.ed.showCompletions({{"H1", "", "# Title", -1, false}});
+            f.key(Qt::Key_Return);
+            QCOMPARE(f.v->document()->firstBlock().text(), QStringLiteral("# Title"));
+        }
+        {   // source + markdown: literal
+            LFx f({}, false, false);
+            f.ed.setCompletionTriggers({"/"});
+            QVERIFY(f.ed.setMode(Mode::Source));
+            f.text("/");
+            f.ed.showCompletions({{"H1", "", "# Title", -1, true}});
+            f.key(Qt::Key_Return);
+            QCOMPARE(f.ed.sourceEdit()->toPlainText(), QStringLiteral("# Title"));
+        }
+    }
     void keyboardNavigation()
     {
         LFx f({}, false, false);

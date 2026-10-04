@@ -2056,7 +2056,7 @@ void LuaPluginHost::deliverPanelEvent(const QString &id, const QString &panelId,
     }, nullptr);
 }
 
-QList<CompletionItem> LuaPluginHost::complete(const QString &id, const QString &completeId, const QString &query, NoteBridge *note, int *dropped, QString *err) {
+QList<CompletionItem> LuaPluginHost::complete(const QString &id, const QString &completeId, const QString &query, NoteBridge *note, int *dropped, QString *err, bool atLineStart) {
     QList<CompletionItem> items;
     int drop = 0;
     if (dropped) *dropped = 0;
@@ -2074,6 +2074,8 @@ QList<CompletionItem> LuaPluginHost::complete(const QString &id, const QString &
         if (!fitsStr(L, {&q, &trigger})) return -1;
         pushQRaw(L, q);
         pushCtx(L, p, "trigger", trigger, note);
+        lua_pushboolean(L, atLineStart ? 1 : 0);
+        lua_setfield(L, -2, "at_line_start");
         return 2;
     }, [&](lua_State *L) {
         if (!lua_istable(L, -1)) { drop = 1; return; }
@@ -2106,6 +2108,12 @@ QList<CompletionItem> LuaPluginHost::complete(const QString &id, const QString &
                     if (lua_type(L, -1) != LUA_TNUMBER || !isint || v < 0 || v > ci.insert.size()) ok = false;
                     else ci.cursorOffset = int(v);
                 }
+                lua_pop(L, 1);
+            }
+            if (ok) {
+                getRaw(L, -1, "markdown");
+                if (lua_type(L, -1) == LUA_TBOOLEAN) ci.markdown = lua_toboolean(L, -1) != 0;
+                else if (!lua_isnil(L, -1)) ok = false;
                 lua_pop(L, 1);
             }
             lua_pop(L, 1);

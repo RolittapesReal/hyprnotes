@@ -266,7 +266,7 @@ end }
 
 ### hn.notes.read(path)
 
-Returns the note text, or `nil, "not found"`. Permission: `notes.read`. Errors: `invalid note path`.
+Returns the note text, or `nil, "not found"`. The read also fails for notes over 4 MiB or with invalid UTF-8, so a plugin must not treat a failed read as "does not exist" before writing; test for existence with the index (`hn.notes.query` on `path`) and, when it has no row, `hn.notes.frontmatter(path)`, which reads the file itself: a table means the note exists, `nil, "not found"` means it does not, and any other error means "unknown, do not write". `hn.notes.resolve` is name-based and the index can lag behind the disk, so neither alone is a safe check. Permission: `notes.read`. Errors: `invalid note path`.
 
 ```lua test perms=notes.read,ui
 hn.command{ id = "rd", title = "Read a note", run = function()
@@ -288,7 +288,7 @@ end }
 
 ### hn.notes.write(path, text)
 
-Creates or **overwrites** the note at `path` and returns `true` on success. Permission: `notes.write` (dangerous), audited.
+When no note exists at `path`, creates it (and any missing folders) at that exact path; returns `false` if the library cannot create exactly that name (for example a leading dot or a base name over 120 characters, which the library would rename). Otherwise **overwrites** the note. Returns `true` on success. Permission: `notes.write` (dangerous), audited.
 
 ```lua test perms=notes.write
 hn.command{ id = "wr", title = "Write a note", run = function()
@@ -477,10 +477,10 @@ end }
 
 ### hn.complete(spec)
 
-`hn.complete{ id, trigger, items }`  -  registers a completion source. When the user types `trigger` (1-8 visible characters such as `"[["` or `"/"`) the editor opens a flat, keyboard-driven popup and asks every plugin registered for that trigger. `items(query, ctx)` receives what the user has typed after the trigger (cut at 256 bytes) and `ctx = { trigger, path?, title? }` (the last two with `note.read`), and returns an array of `{ label, detail?, insert, cursor_offset? }`.
+`hn.complete{ id, trigger, items }`  -  registers a completion source. When the user types `trigger` (1-8 visible characters such as `"[["` or `"/"`) the editor opens a flat, keyboard-driven popup and asks every plugin registered for that trigger. `items(query, ctx)` receives what the user has typed after the trigger (cut at 256 bytes) and `ctx = { trigger, at_line_start, path?, title? }` (the last two with `note.read`), and returns an array of `{ label, detail?, insert, cursor_offset?, markdown? }`. `ctx.at_line_start` is always a boolean: `true` when only whitespace precedes the trigger on its line. `markdown = true` inserts the text as Markdown in the visual editor, so `# Title` becomes a heading; `false` or absent never parses Markdown, and `cursor_offset` is ignored for Markdown items (source mode always inserts the literal text).
 
 - Budget: **20 ms** per plugin per request. At most **50 items** are shown in total; surplus items are dropped.
-- Invalid items are dropped (and logged): not a table, `label` missing/empty/longer than 200 characters, `insert` missing/empty/longer than 8192 characters, `detail` not a string or longer than 200, `cursor_offset` not an integer within `0..#insert` (characters into `insert`; default: the end).
+- Invalid items are dropped (and logged): not a table, `label` missing/empty/longer than 200 characters, `insert` missing/empty/longer than 8192 characters, `detail` not a string or longer than 200, `cursor_offset` not an integer within `0..#insert` (characters into `insert`; default: the end), `markdown` not a boolean.
 - At most 16 completion sources per plugin. Registration is cached; no Lua state exists until the first request.
 
 Permission: `editor.complete`. Errors: `trigger must be 1-8 visible characters without spaces ...`, `field 'items' must be a function`, `duplicate completion id or too many completions`.
@@ -495,6 +495,17 @@ hn.complete{
       items[#items + 1] = { label = note.title, detail = note.path, insert = note.title .. "]]" }
     end
     return items
+  end,
+}
+```
+
+```lua test perms=editor.complete api=2
+hn.complete{
+  id = "blocks",
+  trigger = "/",
+  items = function(query, ctx)
+    if not ctx.at_line_start then return {} end
+    return { { label = "Heading 1", insert = "# Title", markdown = true } }
   end,
 }
 ```

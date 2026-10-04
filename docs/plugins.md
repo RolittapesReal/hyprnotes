@@ -10,6 +10,8 @@ That warning is shown, always visible, in the dialog where you approve a plugin.
 
 Companion documents: [plugin-api.md](plugin-api.md) (every `hn.*` function), [examples/plugins](../examples/plugins) (ten complete plugins).
 
+**Official plugins.** Hyprnotes also maintains four plugins of its own, in the separate `hyprnotes-plugins` repository (next to this one): Slash Menu, Journal and Templates, Tasks and Saved Queries, and Wiki Links. They use the same API and permissions as yours, so they double as larger examples. They are not bundled with the app; the plugin marketplace will carry them.
+
 ## Two kinds of plugin
 
 | | Script plugin (this guide) | Native plugin |
@@ -229,7 +231,7 @@ Set `"api": 2` in `plugin.json` to get four more permissions and the functions t
 
 - **The note index** (`notes.index`): `hn.notes.links`, `backlinks`, `resolve`, `frontmatter` and `query` give you link, tag and task data without reading every note. `query` takes a *table*, never SQL.
 - **Panels** (`ui.panel`): `hn.panel{...}` adds a page to the side dock. You return blocks (headings, text, lists of items, buttons); the app draws them, so a plugin cannot show arbitrary widgets.
-- **Completion** (`editor.complete`): `hn.complete{ trigger = "[[", items = ... }` fills a popup while the user types.
+- **Completion** (`editor.complete`): `hn.complete{ trigger = "[[", items = ... }` fills a popup while the user types. `items` also gets `ctx.at_line_start` (only whitespace before the trigger on its line), and an item with `markdown = true` is inserted as Markdown in the visual editor, so a `/` menu can offer headings and lists.
 - **Link handlers** (`editor.links`): react when the user clicks a `[[link]]`.
 - **Open and rename** (`notes.read`, `notes.write`): `hn.notes.open` shows a note, `hn.notes.rename` renames one (opt-in link rewriting; the app asks the user first).
 

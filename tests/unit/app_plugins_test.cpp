@@ -444,7 +444,17 @@ end }
         QVERIFY(!b.read("/etc/passwd", &t));
         QVERIFY(!b.read("closed.txt", &t));
         QVERIFY(!b.write("../x.md", "boom"));
-        QVERIFY(!b.write("nonexistent.md", "boom"));                 // create() makes notes
+        QVERIFY(!b.write("x.txt", "boom"));
+        QVERIFY(!b.write("/abs.md", "boom"));
+        QVERIFY(b.write("nonexistent.md", "# New\n\nmade by write\n"));   // a missing note is created at exactly that path
+        QVERIFY(l.read("nonexistent.md").contains("made by write"));
+        QVERIFY(b.read("nonexistent.md", &t) && t.contains("made by write"));
+        QVERIFY(b.write("daily/2026/new.md", "# Day\n"));            // missing folders too
+        QVERIFY(l.read("daily/2026/new.md").contains("# Day"));
+        QVERIFY(!b.write(".hidden.md", "boom"));                     // the repository would rename it: refused, nothing left behind
+        QVERIFY(!QFile::exists(l.notes + "/.hidden.md") && !QFile::exists(l.notes + "/hidden.md"));
+        QVERIFY(!b.write(QString(130, 'a') + ".md", "boom"));
+        QVERIFY(!QFile::exists(l.notes + "/" + QString(120, 'a') + ".md"));
         const QString made = b.create("Made", "# Made\n\nhere\n");
         QVERIFY(!made.isEmpty());
         QVERIFY(l.read(made).contains("here"));
@@ -461,6 +471,37 @@ end }
         QVERIFY(b.remove("closed.md"));
         QVERIFY(!QFile::exists(l.notes + "/closed.md"));
         QVERIFY(!b.remove("../x.md"));
+    }
+
+    void journal_today_creates_the_daily_note_through_the_real_bridge() {
+        if (!QFileInfo::exists(QString(HN_PLUGINS_DIR) + "/journal/plugin.json")) QSKIP("hyprnotes-plugins repository not found");
+        Lib l;
+        l.write("A.md", "# A\n");
+        AppController c(accepting(l));
+        QString msg;
+        QVERIFY2(c.plugins().install(QString(HN_PLUGINS_DIR) + "/journal", nullptr, &msg).ok, qPrintable(msg));
+        auto *s = c.openSticky("A.md");
+        QString err;
+        QVERIFY2(c.plugins().runQualified("journal:today", s, &err), qPrintable(err));
+        const QString day = QDate::currentDate().toString("yyyy-MM-dd");
+        QVERIFY(QFile::exists(l.notes + "/daily/" + day + ".md"));
+        QCOMPARE(l.read("daily/" + day + ".md"), QString("# " + day + "\n\n## Plan\n\n## Notes\n"));
+    }
+
+    void wiki_links_click_on_an_unresolved_link_creates_the_note() {
+        if (!QFileInfo::exists(QString(HN_PLUGINS_DIR) + "/wiki-links/plugin.json")) QSKIP("hyprnotes-plugins repository not found");
+        Lib l;
+        l.write("sub/A.md", "# A\n\n[[Fresh idea]]\n");
+        auto o = accepting(l);
+        o.pluginHooks.confirm = [](const QString &, const QString &) { return true; };
+        AppController c(o);
+        QString msg;
+        QVERIFY2(c.plugins().install(QString(HN_PLUGINS_DIR) + "/wiki-links", nullptr, &msg).ok, qPrintable(msg));
+        auto *s = c.openSticky("sub/A.md");
+        hn::plugins::LinkActivation link; link.kind = "link"; link.target = "Fresh idea";
+        QVERIFY(c.plugins().manager()->activateLink(link, c.plugins().bridgeFor(s)));
+        QVERIFY(QFile::exists(l.notes + "/sub/Fresh idea.md"));
+        QVERIFY(l.read("sub/Fresh idea.md").startsWith("# Fresh idea"));
     }
 
     void clipboard_and_theme_bridges() {

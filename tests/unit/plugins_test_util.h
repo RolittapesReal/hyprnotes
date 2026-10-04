@@ -177,10 +177,18 @@ struct FakeEditor : EditorHooksBridge {
 struct FakeUi : UiBridge {
     QStringList notes;
     int prompts = 0;
+    QStringList nextPrompts;  // when non-empty, prompt() pops from the front instead of returning default + "!"
+    int pickIndex = 1;        // host-side answer of pick(): 0-based index into the items, negative = cancel (Lua sees index + 1)
     void notify(const QString &, const QString &m) override { notes << m; }
-    std::optional<QString> prompt(const QString &, const QString &, const QString &, const QString &d) override { ++prompts; return d + "!"; }
-    bool confirm(const QString &, const QString &) override { return true; }
-    int pick(const QString &, const QString &, const QStringList &) override { return 1; }
+    std::optional<QString> prompt(const QString &, const QString &, const QString &, const QString &d) override {
+        ++prompts;
+        if (!nextPrompts.isEmpty()) return nextPrompts.takeFirst();
+        return d + "!";
+    }
+    bool confirmAnswer = true;  // what confirm() answers
+    bool confirm(const QString &, const QString &) override { return confirmAnswer; }
+    QStringList lastPickItems;  // items of the most recent pick()
+    int pick(const QString &, const QString &, const QStringList &items) override { lastPickItems = items; return pickIndex; }
 };
 struct FakeNet : NetBridge {
     QList<HttpRequest> reqs;

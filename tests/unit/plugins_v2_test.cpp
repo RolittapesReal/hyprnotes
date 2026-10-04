@@ -1069,6 +1069,31 @@ end}
         QCOMPARE(r.editor.completions[0].first, quint64(42));
         QCOMPARE(r.editor.completions[0].second.size(), 3);
     }
+    void completionContextHasAtLineStartAndMarkdownFlag() {
+        Rig r;
+        QVERIFY(r.addLua("slashctx", {"editor.complete", "note.read"}, R"LUA(
+hn.complete{id = 'c', trigger = '/', items = function(query, ctx)
+  if ctx.at_line_start ~= true and ctx.at_line_start ~= false then error('at_line_start missing') end
+  if not ctx.at_line_start then return {} end
+  return {
+    {label = 'plain', insert = 'a'},
+    {label = 'md', insert = '# H', markdown = true},
+    {label = 'bad', insert = 'x', markdown = 'yes'},
+  }
+end}
+)LUA", {}, nullptr, 2));
+        const auto onLine = r.mgr->complete("/", "", &r.note, true);
+        QCOMPARE(onLine.size(), 2);                       // 'bad' (markdown not a boolean) is dropped
+        QCOMPARE(onLine[0].label, QString("plain"));
+        QVERIFY(!onLine[0].markdown);
+        QCOMPARE(onLine[1].label, QString("md"));
+        QVERIFY(onLine[1].markdown);
+        QVERIFY(r.mgr->complete("/", "", &r.note, false).isEmpty());
+        QVERIFY(r.mgr->complete("/", "", &r.note).isEmpty());   // default is false
+        r.mgr->requestCompletion(7, "/", "", &r.note, true);
+        QCOMPARE(r.editor.completions.last().second.size(), 2);
+    }
+
     void completionIsCappedAtFiftyAndAcrossPlugins() {
         Rig r;
         const QByteArray lua = "hn.complete{id='c', trigger='/', items=function() local t = {} for i = 1, 500 do t[i] = {label='i'..i, insert='i'} end return t end}";

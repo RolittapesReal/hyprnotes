@@ -85,7 +85,7 @@ void EditorHooks::apply(NoteSession *s) {
         for (auto it = m_completions.begin(); it != m_completions.end();) it = it->s == sp ? m_completions.erase(it) : std::next(it);   // a newer request supersedes
         const quint64 tok = ++m_next;
         m_completions.insert(tok, {sp, r.generation});
-        m_svc->managerIfActive()->requestCompletion(tok, r.triggerId, r.query, m_svc->bridgeFor(sp.data()));
+        m_svc->managerIfActive()->requestCompletion(tok, r.triggerId, r.query, m_svc->bridgeFor(sp.data()), r.atLineStart);
     });
     cs << connect(ed, &hn::editor::NoteEditor::completionDismissed, this, [this, sp] {
         for (auto it = m_completions.begin(); it != m_completions.end();) it = it->s == sp ? m_completions.erase(it) : std::next(it);
@@ -119,7 +119,7 @@ void EditorHooks::completionReply(quint64 token, const QList<CompletionItem> &it
     m_completions.erase(it);
     if (!p.s || !p.s->editor()) return;
     QList<hn::editor::CompletionItem> out;
-    for (const auto &i : items) out.append({i.label, i.detail, i.insert, i.cursorOffset});
+    for (const auto &i : items) out.append({i.label, i.detail, i.insert, i.cursorOffset, i.markdown});
     p.s->editor()->showCompletions(out, p.generation);   // the editor drops it too when a newer query has started
 }
 
