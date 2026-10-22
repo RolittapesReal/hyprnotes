@@ -5,6 +5,8 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QUrl>
+#include <cmath>
+#include <limits>
 
 namespace hn::plugins {
 
@@ -89,8 +91,7 @@ int compareVersions(const QString &a, const QString &b) {
 
 static bool hasCtl(const QString &s, bool allowNl = false) {
     for (QChar c : s)
-        if (c.unicode() < 0x20 && !(allowNl && c == QLatin1Char('\n'))) return true;
-        else if (c.unicode() == 0x7f) return true;
+        if ((c.unicode() < 0x20 && !(allowNl && c == QLatin1Char('\n'))) || c.unicode() == 0x7f) return true;
     return false;
 }
 
@@ -144,9 +145,12 @@ bool parseManifest(const QByteArray &json, const QString &dir, Manifest *out, QL
     }
     // api
     const auto av = o.value(QLatin1String("api"));
-    if (!av.isDouble() || av.toDouble() != double(int(av.toDouble()))) err(QStringLiteral("field 'api' must be the integer %1 or %2").arg(kApiVersion).arg(kApiVersionMax));
-    else {
-        m.api = av.toInt();
+    const double apiNumber = av.toDouble();
+    if (!av.isDouble() || !std::isfinite(apiNumber) || std::trunc(apiNumber) != apiNumber ||
+        apiNumber < double(std::numeric_limits<int>::min()) || apiNumber > double(std::numeric_limits<int>::max())) {
+        err(QStringLiteral("field 'api' must be the integer %1 or %2").arg(kApiVersion).arg(kApiVersionMax));
+    } else {
+        m.api = static_cast<int>(apiNumber);
         if (m.api > kApiVersionMax) err(QStringLiteral("plugin needs plugin API %1 but this app supports API %2").arg(m.api).arg(kApiVersionMax));
         else if (m.api < kApiVersion) err(QStringLiteral("unsupported plugin API %1 (this app supports API %2 to %3)").arg(m.api).arg(kApiVersion).arg(kApiVersionMax));
     }

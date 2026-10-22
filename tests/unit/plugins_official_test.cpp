@@ -80,11 +80,20 @@ struct MemLib : FakeIndexLib {
 struct OfficialRig {
     Rig r;
     MemLib lib;
-    OfficialRig() {
+    // behaviorOnlyIndexBudgets: these tests are about what the official plugins DO. A descheduled test process (ASan, ctest -j2)
+    // can push one in-memory library call past the host's 100 ms budget; the host then correctly discards the answer and the plugin
+    // correctly reports "index not available". For behavior tests only, the per-call/per-callback index budgets are widened so the
+    // outcome does not depend on scheduling. This is NOT performance acceptance: the product defaults stay 100/500 ms (asserted in
+    // officialIndexBudgetsKeepProductDefaultsAndAreEnforced) and plugins_v2 enforces them. Rigs built with strict=true keep the defaults.
+    explicit OfficialRig(bool strict = false) {
         qputenv("TZ", "UTC");
         tzset();
         r.mgr->host()->env().clock = [] { return kClock; };
         r.mgr->host()->env().bridges.library = &lib;
+        if (!strict) {
+            r.mgr->host()->env().indexCallMs = 5000;
+            r.mgr->host()->env().indexCallbackMs = 20000;
+        }
     }
     void use(const QString &id) {
         const auto res = r.mgr->install(official(id), true);
@@ -172,6 +181,28 @@ private slots:
         QCOMPARE(items[0].insert, QString("---\n"));
     }
     // ------------------------------------------------------------ journal
+    // The failure mode behind the one empty-journal-file run seen under ASan load, pinned deterministically: an index answer that arrives after
+    // the 100 ms call budget is discarded, and the plugin must TELL the user instead of silently doing nothing.
+    void officialIndexBudgetsKeepProductDefaultsAndAreEnforced() {
+        HostEnv defaults;
+        QCOMPARE(defaults.indexCallMs, 100);
+        QCOMPARE(defaults.indexCallbackMs, 500);
+        QCOMPARE(defaults.indexPerSecond, 200);
+        OfficialRig strict(true);
+        QCOMPARE(strict.r.mgr->host()->env().indexCallMs, 100);
+        QCOMPARE(strict.r.mgr->host()->env().indexCallbackMs, 500);
+    }
+    void journalWhenTheIndexAnswersTooLateTellsTheUserAndCreatesNothing() {
+        OfficialRig x(true);   // product-default budgets
+        x.use("journal");
+        auto &r = x.r;
+        x.lib.delayMs = 150;
+        QString err;
+        QVERIFY2(r.mgr->runCommand("journal:today", &r.note, &err), qPrintable(err));
+        QVERIFY(!x.lib.files.contains("daily/2026-10-01.md"));
+        QVERIFY2(r.ui.notes.join("|").contains("index is not available"), qPrintable(r.ui.notes.join("|")));
+        QVERIFY(x.audit().contains("index call exceeded 100 ms"));
+    }
     void journalTodayCreatesFromDefaultTemplateOpensAndNeverOverwrites() {
         OfficialRig x;
         x.use("journal");

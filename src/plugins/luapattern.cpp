@@ -111,11 +111,12 @@ bool singleMatch(MS *ms, const char *s, const char *p, const char *ep) {
 const char *matchBalance(MS *ms, const char *s, const char *p) {
     if (p >= ms->p_end - 1) luaL_error(ms->L, "malformed pattern (missing arguments to '%%b')");
     if (s >= ms->src_end || *s != *p) return nullptr;
-    const int b = *p, e = *(p + 1);
+    const unsigned char b = static_cast<unsigned char>(*p), e = static_cast<unsigned char>(*(p + 1));
     int cont = 1;
     while (++s < ms->src_end) {
-        if (*s == e) { if (--cont == 0) return s + 1; }
-        else if (*s == b) cont++;
+        const unsigned char c = static_cast<unsigned char>(*s);
+        if (c == e) { if (--cont == 0) return s + 1; }
+        else if (c == b) cont++;
     }
     return nullptr;
 }
@@ -138,7 +139,7 @@ const char *minExpand(MS *ms, const char *s, const char *p, const char *ep) {
 }
 const char *startCapture(MS *ms, const char *s, const char *p, ptrdiff_t what) {
     const int level = ms->level;
-    if (level >= kMaxCaptures) luaL_error(ms->L, "too many captures");
+    if (level >= kMaxCaptures) { luaL_error(ms->L, "too many captures"); return nullptr; }   // luaL_error does not return; the return keeps the bound visible to analysers
     ms->capture[level].init = s;
     ms->capture[level].len = what;
     ms->level = static_cast<unsigned char>(level + 1);

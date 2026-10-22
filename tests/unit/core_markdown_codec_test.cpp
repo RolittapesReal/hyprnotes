@@ -48,6 +48,10 @@ private slots:
         row("hr not front matter", "intro\n\n---\n\nmore\n", true);
         row("dashes no close", "---\nnot closed\n", true);
         row("invalid utf8", "caf\xE9", false, "UTF-8");
+        row("control bytes", QByteArray("a\x01b", 3), false, "control");
+        row("embedded bom", QByteArray("a\xEF\xBB\xBF" "b"), false, "BOM");
+        row("repeated leading bom", QByteArray("\xEF\xBB\xBF\xEF\xBB\xBF" "text\n"), false, "BOM");
+        row("embedded bom after leading bom", QByteArray("\xEF\xBB\xBF" "# x\n\xEF\xBB\xBF" "#\n"), false, "BOM");
         row("table", "| a | b |\n|---|---|\n| 1 | 2 |\n", false, "table");
         row("image", "see ![alt](pic.png)\n", false, "image");
         row("html block", "<div>\nhi\n</div>\n", false, "HTML");
@@ -124,7 +128,6 @@ private slots:
         QVERIFY(semanticTokens(md).size() > 10);
         QCOMPARE(semanticTokens(md), semanticTokens(md));
     }
-
     void tags_data() {
         QTest::addColumn<QString>("md");
         QTest::addColumn<QStringList>("tags");

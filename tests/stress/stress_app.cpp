@@ -25,11 +25,15 @@
 #include <malloc.h>
 #include <execinfo.h>
 #include <pthread.h>
+#include <sys/syscall.h>
 #include <atomic>
 #include <thread>
 
 using namespace st;
 using namespace hn::app;
+
+static std::atomic<long> g_watchdogTid{0};
+static double threadCpuSeconds(long tid);
 
 // ---------------------------------------------------------------- warnings captured from the app under test
 static QMap<QString, int> g_warnings;
@@ -130,9 +134,13 @@ static void idleLoad(int N, bool edit, int settleS, int cpuS, int sampleS) {
     runFor(settleS * 1000);
     malloc_trim(0);   // report both: the figure below is taken without any extra trimming after this single point
     // CPU window: two reads only (sampling smaps would charge its own cost to this process)
-    const double cpu0 = cpuSeconds(); Stopwatch wall;
+    const long watchdog = g_watchdogTid.load();
+    const double cpu0 = cpuSeconds(), watchdogCpu0 = threadCpuSeconds(watchdog); Stopwatch wall;
     runFor(cpuS * 1000);
-    const double cpuPct = (cpuSeconds() - cpu0) / (wall.ms() / 1000.0) * 100.0;
+    const double wallSeconds = wall.ms() / 1000.0;
+    const double watchdogCpu = threadCpuSeconds(watchdog) - watchdogCpu0;
+    const double cpuPct = qMax(0.0, (cpuSeconds() - cpu0 - watchdogCpu) / wallSeconds * 100.0);
+    metric(qPrintable(tag + ".harness_watchdog_cpu_pct"), watchdogCpu / wallSeconds * 100.0, "%");
     metric(qPrintable(tag + ".idle_cpu_pct_of_one_core"), cpuPct, "%");
     check(cpuPct < 0.1, QString("[%1] idle CPU %2% of one core over %3 s (< 0.1%%, spec 9.2)").arg(tag).arg(cpuPct).arg(cpuS));
     // memory sampling once per second
@@ -259,7 +267,14 @@ static void cycles(int warm, int batches, int perBatch, int extra, int distinct)
     auto extended = [&](const char *name, int first, int count, int distinct) {
         malloc_trim(0);
         const Snap before = snap();
-        for (int i = 0; i < count; ++i) cycle(first + (i % distinct));
+        for (int i = 0; i < count; ++i) {
+            cycle(first + (i % distinct));
+            if (count >= 1000 && (i + 1) % (count / 10) == 0) {   // live-heap curve of a long run, one point per tenth
+                const Snap x = snap();
+                note(QString("curve %1: after %2 cycles heapInUse=%3 MiB pss=%4 MiB priv=%5 MiB widgets=%6 fds=%7 threads=%8").arg(name).arg(i + 1).arg(x.heapInUse).arg(x.pss).arg(x.priv).arg(x.widgets).arg(x.fds).arg(x.threads));
+                metric(qPrintable(QString("app.cycles.extended_%1.curve%2.heap_in_use").arg(name).arg((i + 1) * 10 / count)), x.heapInUse, "MiB");
+            }
+        }
         runFor(500);
         const Snap after = snap();
         const double dHeap = after.heapInUse - before.heapInUse, perCycle = dHeap * 1024.0 / count;
@@ -489,11 +504,21 @@ static void orphanProbe() {
 
 // Hang diagnostics: if the GUI thread stops ticking for 20 s, dump its stack (raw addresses; resolve with addr2line) and abort.
 static std::atomic<long> g_beat{0};
+static double threadCpuSeconds(long tid) {
+    if (tid <= 0) return 0;
+    QFile f(QString("/proc/self/task/%1/stat").arg(tid));
+    if (!f.open(QIODevice::ReadOnly)) return 0;
+    const QByteArray b = f.readAll();
+    const QList<QByteArray> fields = b.mid(b.lastIndexOf(')') + 2).simplified().split(' ');
+    if (fields.size() < 13) return 0;
+    return (fields[11].toDouble() + fields[12].toDouble()) / double(sysconf(_SC_CLK_TCK));
+}
 static void dumpStack(int) { void *bt[64]; const int n = backtrace(bt, 64); backtrace_symbols_fd(bt, n, 2); }
 static void startWatchdog() {
     signal(SIGUSR1, dumpStack);
     const pthread_t mainT = pthread_self();
     std::thread([mainT] {
+        g_watchdogTid.store(long(syscall(SYS_gettid)));
         long last = -1; int still = 0;
         for (;;) { std::this_thread::sleep_for(std::chrono::seconds(1)); const long b = g_beat.load(); still = (b == last) ? still + 1 : 0; last = b;
             if (still == 20) { std::fprintf(stderr, "WATCHDOG: GUI thread stalled for 20 s, stack follows\n"); pthread_kill(mainT, SIGUSR1); std::this_thread::sleep_for(std::chrono::seconds(2)); std::fprintf(stderr, "WATCHDOG: aborting\n"); std::_Exit(4); } }
@@ -511,9 +536,13 @@ int main(int argc, char **argv) {
     const bool quick = a.contains("--quick");   // 5 s settle / 5 s cpu / 5 samples, for smoke runs only
     if (mode == "idle") idleLoad(num(2, 10), a.contains("--edit"), quick ? 5 : 30, quick ? 5 : 60, quick ? 5 : 60);
     else if (mode == "binary") binaryLoad(num(2, 10), quick ? 5 : 30, quick ? 5 : 60, quick ? 5 : 60);
-    else if (mode == "cycles") { cycles(20, 5, 20, quick ? 50 : 300, 20); cycles(20, 5, 20, quick ? 50 : 300, 400); }
+    else if (mode == "cycles") {   // cycles [N]: N extra cycles for the extended phase (default 300, 50 with --quick); N > 300 skips the fresh-notes pass
+        const int extra = num(2, quick ? 50 : 300);
+        cycles(20, 5, 20, extra, 20);
+        if (extra <= 300) cycles(20, 5, 20, extra, 400);
+    }
     else if (mode == "orphan") orphanProbe();
     else if (mode == "soak") soak(num(2, 20), a.contains("--fast"));
-    else { std::fprintf(stderr, "usage: stress_app idle N [--edit] | binary N | cycles | soak MINUTES [--fast] [--quick]\n"); return 2; }
+    else { std::fprintf(stderr, "usage: stress_app idle N [--edit] | binary N | cycles [N] | soak MINUTES [--fast] [--quick]\n"); return 2; }
     return finish("stress_app");
 }

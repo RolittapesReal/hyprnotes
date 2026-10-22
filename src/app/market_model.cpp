@@ -83,7 +83,6 @@ QStringList MarketModel::allTags() const {
 
 namespace {
 constexpr int kGap = 6;
-constexpr int kMargin = MarketDelegate::kMargin;
 
 QFont nameFont() { return ui::uiFont(ui::theme().baseSize, QFont::Bold); }
 QFont bodyFont() { return ui::uiFont(qMax(11, ui::theme().baseSize - 2)); }
@@ -97,7 +96,7 @@ int chipHeight() { return QFontMetrics(chipFont()).height() + 8; }
 
 // Tags then permissions, wrapped to the width; returns the line count (at most kMaxChipLines, the rest is in the detail strip).
 constexpr int kMaxChipLines = 3;
-struct Placed { QRect r; MarketDelegate::Chip chip; bool tag; };
+struct Placed { QRect r; MarketDelegate::Chip chip; bool tag = false; };
 QList<Placed> layoutChips(const MarketEntry &e, int width, int *lines) {
     QList<Placed> out;
     QList<QPair<MarketDelegate::Chip, bool>> all;
@@ -209,7 +208,6 @@ void MarketDelegate::paint(QPainter *p, const QStyleOptionViewItem &o, const QMo
     if (cut < text.size()) lines << fm.elidedText(text.mid(cut).trimmed(), Qt::ElideRight, in.width());
     for (int l = 0; l < lines.size(); ++l)
         p->drawText(QRect(in.left(), y + l * lineH, in.width(), lineH), Qt::AlignVCenter, p->fontMetrics().elidedText(lines[l], Qt::ElideRight, in.width()));
-    y += 2 * lineH + kGap;
 
     // chips
     p->setFont(chipFont());

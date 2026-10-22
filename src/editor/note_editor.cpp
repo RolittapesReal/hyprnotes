@@ -18,6 +18,18 @@
 namespace hn::editor {
 
 static constexpr qsizetype kVisualLimit = 256 * 1024;
+static QString responsiveVisualLimit(const QByteArray &body)
+{
+    constexpr qsizetype maxLineBytes = 64 * 1024;
+    constexpr qsizetype maxLines = 50000;
+    qsizetype lineBytes = 0, lines = 1;
+    for (char c : body) {
+        if (c == '\n') { ++lines; lineBytes = 0; }
+        else if (++lineBytes > maxLineBytes) return QStringLiteral("A line is too long for responsive visual editing");
+        if (lines > maxLines) return QStringLiteral("Too many lines for responsive visual editing");
+    }
+    return {};
+}
 
 NoteEditor::NoteEditor(QWidget *parent) : QWidget(parent)
 {
@@ -110,8 +122,12 @@ void NoteEditor::load(const QByteArray &fileBytes)
         m_src->setReadOnly(ro);
         switchTo(Mode::Source, reason);
     };
-    if (!hn::core::isValidUtf8(body)) {
+    if (m_bom && body.startsWith("\xEF\xBB\xBF")) {
+        toSource(tr("Repeated UTF-8 BOM: opened in source mode to preserve the file."), false);
+    } else if (!hn::core::isValidUtf8(body)) {
         toSource(tr("Invalid UTF-8: opened read-only. Use Convert to make it editable (undecodable bytes become U+FFFD)."), true);
+    } else if (const QString reason = responsiveVisualLimit(body); !reason.isEmpty()) {
+        toSource(reason, false);
     } else if (auto cls = hn::core::classifyMarkdown(body, kVisualLimit); !cls.visual) {
         toSource(cls.reason, false);
     } else {

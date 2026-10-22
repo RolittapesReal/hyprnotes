@@ -41,6 +41,7 @@ private slots:
         QTest::newRow("homepage ftp") << "homepage" << QJsonValue("ftp://x.org") << "homepage";
         QTest::newRow("api 3") << "api" << QJsonValue(3) << "API";
         QTest::newRow("api 0") << "api" << QJsonValue(0) << "API";
+        QTest::newRow("api out of int range") << "api" << QJsonValue(44444444444.0) << "API";
         QTest::newRow("api string") << "api" << QJsonValue("1") << "api";
         QTest::newRow("api 1.5") << "api" << QJsonValue(1.5) << "api";
         QTest::newRow("tier") << "tier" << QJsonValue("wasm") << "tier";

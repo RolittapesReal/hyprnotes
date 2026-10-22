@@ -100,9 +100,9 @@ private:
     ui::IconButton *m_settingsBtn, *m_popBtn, *m_moreBtn;
     QCache<QString, QPair<qint64, QString>> m_previews{500};
     QTimer m_debounce, m_refreshTimer;
-    quint64 m_lastId = 0;
+    quint64 m_lastId = 0, m_rebaseRequestId = 0;
     int m_searches = 0, m_lastOffset = 0;
-    bool m_syncing = false, m_titled = false;
+    bool m_syncing = false, m_titled = false, m_rebasePending = false;
     int m_total = 0;
     QHBoxLayout *m_root = nullptr;
     QWidget *m_railCol = nullptr, *m_listCol = nullptr, *m_editorCol = nullptr, *m_railLine = nullptr;

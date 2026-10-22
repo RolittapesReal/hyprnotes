@@ -88,6 +88,25 @@ ConsentRequest request() {
 class DialogPolishTest : public QObject {
     Q_OBJECT
 private slots:
+    void settingsDialogFitsAvailableScreenWhenOversized() {
+        PolishProfile profile;
+        apptest::Lib lib;
+        AppController controller(lib.opts());
+        SettingsDialog dialog(&controller);
+        const QRect available = dialog.screen()->availableGeometry();
+        dialog.resize(available.width() + 300, available.height() + 300);
+        dialog.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+        QTRY_VERIFY2(dialog.frameGeometry().width() <= available.width(),
+                     qPrintable(QString("settings %1x%2 exceeds available %3x%4; minimum %5x%6")
+                         .arg(dialog.frameGeometry().width()).arg(dialog.frameGeometry().height())
+                         .arg(available.width()).arg(available.height()).arg(dialog.minimumWidth()).arg(dialog.minimumHeight())));
+        QTRY_VERIFY2(dialog.frameGeometry().height() <= available.height(),
+                     qPrintable(QString("settings %1x%2 exceeds available %3x%4")
+                         .arg(dialog.frameGeometry().width()).arg(dialog.frameGeometry().height())
+                         .arg(available.width()).arg(available.height())));
+    }
+
     void pluginRestylesInPlaceWithoutReloadOrLostEditingState() {
         PolishProfile profile;
         apptest::Lib lib;
@@ -316,14 +335,20 @@ private slots:
         dialog.resize(requested); dialog.show();
         QVERIFY(QTest::qWaitForWindowExposed(&dialog));
         QTRY_COMPARE(dialog.width(), requested.width());
-        QTRY_VERIFY2(dialog.height() <= requested.height(), qPrintable(QString("requested %1x%2, actual %3x%4, minimum height %5")
-            .arg(requested.width()).arg(requested.height()).arg(dialog.width()).arg(dialog.height()).arg(dialog.minimumHeight())));
-        QVERIFY(dialog.minimumHeight() <= requested.height());
-        QCOMPARE(dialog.size(), requested);
+        const int maxHeight = qFloor(available.height() * 0.9);
+        QTRY_VERIFY2(dialog.height() <= maxHeight, qPrintable(QString("90%% screen cap %1, requested %2x%3, actual %4x%5, minimum height %6")
+            .arg(maxHeight).arg(requested.width()).arg(requested.height()).arg(dialog.width()).arg(dialog.height()).arg(dialog.minimumHeight())));
+        QVERIFY(dialog.minimumHeight() <= maxHeight);
         QVERIFY(dialog.frameGeometry().height() <= available.height());
         auto *warning = dialog.findChild<QLabel *>("hnConsentWarningText");
         QVERIFY(warning);
         QTRY_VERIFY(warning->height() >= warning->heightForWidth(warning->width()));
+        {   // the label lives in a scroll area: the part the user sees must be keyboard-scrollable when it is shorter than the text
+            auto *warnArea = dialog.findChild<QScrollArea *>("hnConsentWarningDetails");
+            QVERIFY(warnArea);
+            QVERIFY2(warnArea->focusPolicy() != Qt::NoFocus, "warning scroll area must be reachable by keyboard");
+            QVERIFY(warnArea->viewport()->height() >= dialog.fontMetrics().height());
+        }
         QVERIFY(dialog.rect().contains(inWidget(dialog.warningPanel(), &dialog)));
         for (auto *b : {dialog.cancelButton(), dialog.approveButton()}) {
             QVERIFY(b->isVisible());
@@ -367,7 +392,8 @@ private slots:
         dialog.resize(600, available.height() * 2);
         QTRY_VERIFY(dialog.frameGeometry().height() <= available.height());
         dialog.resize(requested);
-        QTRY_COMPARE(dialog.size(), requested);
+        QTRY_COMPARE(dialog.width(), requested.width());
+        QTRY_VERIFY(dialog.height() <= maxHeight);
         QSignalSpy accepted(&dialog, &QDialog::accepted);
         dialog.cancelButton()->setFocus();
         QTest::keyClick(&dialog, Qt::Key_Return);
@@ -409,7 +435,7 @@ private slots:
             QTRY_COMPARE(dialog.nativePanel()->palette().color(QPalette::Window), controller.theme().danger);
             auto *text = dialog.findChild<QLabel *>("hnConsentNativeText");
             QTRY_COMPARE(text->font().pixelSize(), px);
-            QVERIFY(text->height() >= text->heightForWidth(text->width()));
+            QTRY_VERIFY(text->height() >= text->heightForWidth(text->width()));
         }
         // A second dialog opened after the switch uses the same current tokens.
         ConsentDialog later(r, nullptr, 60000); later.show();

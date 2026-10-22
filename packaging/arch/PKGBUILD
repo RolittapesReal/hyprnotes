@@ -1,7 +1,7 @@
 # Maintainer: Hyprnotes contributors
 # Built from a local source tarball by packaging/build-package.sh (which fills in sha256sums).
 pkgname=hyprnotes
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc='Markdown notes and sticky notes for Hyprland (Qt6)'
 arch=('x86_64')
@@ -9,7 +9,7 @@ url='https://github.com/RolittapesReal/hyprnotes'
 license=('MIT')
 # Direct NEEDED libs of /usr/bin/hyprnotes: Qt6{Core,Gui,Widgets,Network,Sql,Svg}, md4c, libGLX/libOpenGL, libstdc++, libgcc_s, libc.
 # SQLite is used through Qt's qsqlite plugin (qt6-base depends on sqlite); qt6-wayland supplies the Wayland platform plugin.
-depends=('qt6-base' 'qt6-svg' 'qt6-wayland' 'md4c' 'sqlite' 'lua' 'libarchive' 'libglvnd' 'gcc-libs' 'glibc')
+depends=('qt6-base' 'qt6-svg' 'qt6-wayland' 'md4c' 'sqlite>=3.35' 'lua' 'libarchive' 'libglvnd' 'gcc-libs' 'glibc')
 makedepends=('cmake' 'ninja')
 options=('!debug')
 source=("$pkgname-$pkgver.tar.gz")

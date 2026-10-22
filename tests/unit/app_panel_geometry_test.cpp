@@ -13,6 +13,28 @@ namespace ui = hn::app::ui;
 class AppPanelGeometryTest : public QObject {
     Q_OBJECT
 private slots:
+    void plugin_panel_icon_is_painted_in_header_and_overflow_action() {
+        Lib lib;
+        AppController c(lib.opts());
+        c.plugins().manager();
+        c.plugins().hub()->showPanel("fixture:icon", "Icon panel", "link");
+        PanelDock dock(&c);
+        dock.resize(420, 280);
+        dock.show();
+        QTRY_VERIFY(dock.tabRect(0).isValid());
+        const QRect tab = dock.tabRect(0);
+        const QImage image = dock.grab().toImage();
+        const QColor background = image.pixelColor(tab.left() + 4, tab.center().y());
+        int iconPixels = 0;
+        for (int y = tab.center().y() - 8; y <= tab.center().y() + 7; ++y)
+            for (int x = tab.left() + 9; x <= tab.left() + 25; ++x)
+                if (image.pixelColor(x, y) != background) ++iconPixels;
+        QVERIFY(iconPixels > 4);
+        auto *overflow = dock.findChild<QToolButton *>("hnPanelOverflow");
+        QVERIFY(overflow && overflow->menu());
+        QVERIFY(!overflow->menu()->actions().first()->icon().isNull());
+    }
+
     void searchShortcutRevealsSearchFromCompactRail() {
         Lib lib; lib.write("a.md", "alpha\n"); lib.write("b.md", "beta\n");
         AppController c(lib.opts()); c.plugins().manager();
@@ -166,6 +188,18 @@ private slots:
         QVERIFY(bounds.contains(popup->geometry()));
         QVERIFY(popup->rect().contains(popup->closeButton()->geometry()));
         QVERIFY(popup->rect().contains(popup->view()->geometry())); popup->close();
+    }
+    void stickyPanelPopupDismissesWhenParentGeometryChanges() {
+        Lib lib; lib.write("A.md", "# A\n"); AppController c(lib.opts());
+        c.plugins().manager();
+        c.plugins().hub()->showPanel("fixture:one", "Panel", {});
+        c.openSticky("A.md"); auto *w = c.stickyOf("A.md");
+        auto *popup = w->openPanels(); QVERIFY(popup && popup->isVisible());
+        w->move(w->pos() + QPoint(20, 10));
+        QVERIFY(!popup->isVisible());
+        popup = w->openPanels(); QVERIFY(popup && popup->isVisible());
+        w->resize(w->size() + QSize(20, 10));
+        QVERIFY(!popup->isVisible());
     }
 };
 int main(int argc, char **argv) {

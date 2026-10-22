@@ -3,17 +3,26 @@
 #include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QImage>
+#include <QHelpEvent>
 #include <QPainter>
 #include <QRandomGenerator>
 #include <QScrollBar>
 #include <QScreen>
+#include <QTextDocument>
+#include <QTextLayout>
+#include <QToolTip>
 #include <algorithm>
 
 #include "editor_test_util.h"
+#include "completion_popup.h"
 #include "hn/core/links.h"
 #include "hn/theme/theme.h"
 
 using namespace hntest;
+
+struct PopupFormatFixture : CompletionPopup {
+    using CompletionPopup::highlightFormats;
+};
 
 Q_DECLARE_METATYPE(hn::editor::LinkRefInfo)
 Q_DECLARE_METATYPE(hn::editor::CompletionRequest)
@@ -153,6 +162,28 @@ private slots:
         QCOMPARE(f.ed.linkRangesInBlock(2).size(), 0);
         QCOMPARE(f.ed.linkRangesInBlock(4).size(), 1);
     }
+    void visualAndSourceLinkLinesAreOneBasedDocumentLines()
+    {
+        LFx f("first paragraph\n\nSee [[Visual]] here\n");
+        int visualBlock = -1;
+        LinkRange visualRange;
+        for (int block = 0; block < f.v->document()->blockCount(); ++block) {
+            const auto ranges = f.ed.linkRangesInBlock(block);
+            if (!ranges.isEmpty()) { visualBlock = block; visualRange = ranges.first(); break; }
+        }
+        QVERIFY(visualBlock >= 0);
+        QCOMPARE(visualRange.ref.line, visualBlock + 2);  // one empty source line separates visual paragraphs
+        QVERIFY(f.ed.setMode(Mode::Source));
+        int sourceBlock = -1;
+        LinkRange sourceRange;
+        for (int block = 0; block < f.ed.sourceEdit()->document()->blockCount(); ++block) {
+            const auto ranges = f.ed.linkRangesInBlock(block);
+            if (!ranges.isEmpty()) { sourceBlock = block; sourceRange = ranges.first(); break; }
+        }
+        QVERIFY(sourceBlock >= 0);
+        QCOMPARE(sourceRange.ref.line, sourceBlock + 1);
+        QCOMPARE(sourceRange.ref.line, visualRange.ref.line);
+    }
     void cacheInvalidatedByEditsAndCodeToggle()
     {
         LFx f("alpha [[Alpha]] omega\n");
@@ -185,6 +216,9 @@ private slots:
         QCOMPARE(f.ed.linkRangesInBlock(0)[0].state, LinkState::Resolved);   // still cached
         f.ed.invalidateLinkStates();
         QCOMPARE(f.ed.linkRangesInBlock(0)[0].state, LinkState::Unresolved);
+        answer = LinkState::Unknown;
+        f.ed.invalidateLinkStates();
+        QCOMPARE(f.ed.linkRangesInBlock(0)[0].state, LinkState::Unknown);
     }
     void roundTripUnchangedWithOverlay()
     {
@@ -385,7 +419,7 @@ private slots:
         f.preedit("[[");
         f.preedit("/");
         f.commit("[[");
-        QCOMPARE(req.count(), 0);
+        QCOMPARE(req.count(), 1);  // committed text is real input; only preedit must be ignored
         f.preedit({});
         // selection active: no trigger
         f.ed.selectAll();
@@ -404,6 +438,18 @@ private slots:
         s.moveCaret(0, 1);
         s.text(" [[");
         QCOMPARE(sreq.count(), 1);
+    }
+    void imeCommitCanStartCompletion()
+    {
+        LFx f({}, false, false);
+        f.ed.setCompletionTriggers({"[["});
+        QSignalSpy req(&f.ed, &NoteEditor::completionRequested);
+        QInputMethodEvent event;
+        event.setCommitString("[[");
+        QApplication::sendEvent(f.v, &event);
+        QCOMPARE(f.plain(), QString("[["));
+        QCOMPARE(req.count(), 1);
+        QCOMPARE(req.first().first().value<CompletionRequest>().triggerId, QString("[["));
     }
     void disabledByDefaultAndEscapeEnds()
     {
@@ -588,6 +634,91 @@ private slots:
                                QPoint(0, img.height() - 1), QPoint(img.width() - 1, img.height() - 1)})
             QCOMPARE(img.pixelColor(p).alpha(), square ? 255 : 0);
     }
+    void completionHighlightRangesAreRendered()
+    {
+        const auto theme = hn::theme::loadTheme(QStringLiteral("modernist"), false);
+        struct Case { QString label, query; QList<QPair<int, int>> ranges; };
+        const QList<Case> cases{
+            {QStringLiteral("banana"), QString(), {}},
+            {QStringLiteral("banana"), QStringLiteral("ban"), {{0, 3}}},
+            {QStringLiteral("banana"), QStringLiteral("bna"), {{0, 1}, {2, 2}}},
+            {QStringLiteral("baaana"), QStringLiteral("aa"), {{1, 2}}},
+            {QStringLiteral("A😀 café"), QStringLiteral("fé"), {{6, 2}}},
+            {QStringLiteral("banana"), QStringLiteral("xyz"), {}},
+        };
+        for (const auto &test : cases) {
+            const auto formats = PopupFormatFixture::highlightFormats(test.label, test.label, test.query, theme.accent);
+            QCOMPARE(formats.size(), test.ranges.size());
+            for (qsizetype i = 0; i < formats.size(); ++i) {
+                QCOMPARE(formats[i].start, test.ranges[i].first);
+                QCOMPARE(formats[i].length, test.ranges[i].second);
+                QCOMPARE(formats[i].format.foreground().color(), theme.accent);
+                QCOMPARE(formats[i].format.fontWeight(), QFont::DemiBold);
+            }
+        }
+    }
+    void completionHighlightPaintUsesFormatRanges()
+    {
+        hn::theme::Theme theme;
+        theme.surface = QColor("#000000");
+        theme.bg = QColor("#080808");
+        theme.text = QColor("#ffffff");
+        theme.accent = QColor("#ff00ff");
+        theme.muted = QColor("#999999");
+        theme.border = QColor("#333333");
+        theme.dark = true;
+        theme.radius = 0;
+        QFont font(QStringLiteral("DejaVu Sans Mono"));
+        font.setPixelSize(22);
+
+        struct Case { QString label, query; QList<QPair<int, int>> ranges; };
+        const QList<Case> cases{
+            {QStringLiteral("banana"), QStringLiteral("ban"), {{0, 3}}},
+            {QStringLiteral("banana"), QStringLiteral("bna"), {{0, 1}, {2, 2}}},
+            {QStringLiteral("A😀 café"), QStringLiteral("fé"), {{6, 2}}},
+            {QStringLiteral("banana"), QStringLiteral("xyz"), {}},
+        };
+        QWidget owner;
+        CompletionPopup popup(&owner);
+        popup.setTheme(theme, font);
+        for (const auto &test : cases) {
+            popup.setItems({{test.label, {}, {}, -1}}, test.query);
+            const auto row = popup.rowLayout(0);
+            QVERIFY2(row.labelText == test.label, "render fixture label must not elide");
+            popup.resize(400, popup.rowHeight() + 2);
+            const QImage image = popup.grab().toImage();
+            QVERIFY(!image.isNull());
+            QCOMPARE(image.devicePixelRatio(), qreal(1));
+
+            QTextLayout layout(row.labelText, font);
+            QTextOption option;
+            option.setWrapMode(QTextOption::NoWrap);
+            layout.setTextOption(option);
+            layout.beginLayout();
+            QTextLine line = layout.createLine();
+            line.setLineWidth(row.labelRect.width());
+            layout.endLayout();
+            for (int i = 0; i < row.labelText.size(); ++i) {
+                const qreal a = line.cursorToX(i), b = line.cursorToX(i + 1);
+                if (qFuzzyCompare(a, b)) continue; // second UTF-16 unit in a surrogate pair
+                bool expected = false;
+                for (const auto &range : test.ranges)
+                    expected |= i >= range.first && i < range.first + range.second;
+                int accentPixels = 0;
+                const int x0 = row.labelRect.left() + qFloor(qMin(a, b));
+                const int x1 = row.labelRect.left() + qCeil(qMax(a, b));
+                for (int y = row.labelRect.top(); y < row.labelRect.bottom(); ++y)
+                    for (int x = x0; x < x1 && x < image.width(); ++x) {
+                        const QColor pixel = image.pixelColor(x, y);
+                        // Tolerate antialias blends while separating magenta accent from white text/background.
+                        if (pixel.red() > 180 && pixel.blue() > 180 && pixel.green() < 120) ++accentPixels;
+                    }
+                QVERIFY2((accentPixels > 0) == expected,
+                         qPrintable(QStringLiteral("label=%1 query=%2 UTF-16 index=%3 accentPixels=%4")
+                                        .arg(test.label, test.query).arg(i).arg(accentPixels)));
+            }
+        }
+    }
     void popupGeometryOnSmallScreens()
     {
         const QSize sz(300, 8 * 28 + 2);
@@ -631,6 +762,46 @@ private slots:
         f.ed.setMode(Mode::Source);
         QVERIFY(!f.ed.completionActive());
         QVERIFY(!f.ed.completionPopup()->isVisible());
+    }
+    void completionDetailIsElidedAndAvailableAsPlainTooltip()
+    {
+        LFx f({}, false, false);
+        f.ed.setCompletionTriggers({"/"});
+        f.text("/");
+        const QString detail = QString("detail & <b>plain</b> ").repeated(20);
+        f.ed.showCompletions({{"label", detail, "insert", -1}});
+        auto *popup = f.ed.completionPopup();
+        const auto row = static_cast<CompletionPopup *>(popup)->rowLayout(0);
+        QVERIFY(row.detailText.size() < detail.size());
+        QHelpEvent help(QEvent::ToolTip, row.detailRect.center(), popup->mapToGlobal(row.detailRect.center()));
+        QApplication::sendEvent(popup, &help);
+        QVERIFY(popup->toolTip().startsWith(QStringLiteral("<qt>")));
+        QTextDocument renderedTooltip;
+        renderedTooltip.setHtml(popup->toolTip());
+        QCOMPARE(renderedTooltip.toPlainText(), detail);
+        QCOMPARE(QToolTip::text(), popup->toolTip());
+        QCOMPARE(popup->toolTipDuration(), -1);
+    }
+    void completionPopupDismissesWhenEditorWindowMovesOrResizes()
+    {
+        LFx f({}, false, false);
+        f.ed.setCompletionTriggers({"/"});
+        f.text("/");
+        f.ed.showCompletions(items(3));
+        QVERIFY(f.ed.completionPopup()->isVisible());
+        QMoveEvent moved(QPoint(30, 40), f.ed.pos());
+        QApplication::sendEvent(&f.ed, &moved);
+        QVERIFY(!f.ed.completionActive());
+        f.text("/");
+        f.ed.showCompletions(items(3));
+        QResizeEvent resized(QSize(700, 500), f.ed.size());
+        QApplication::sendEvent(&f.ed, &resized);
+        QVERIFY(!f.ed.completionActive());
+        f.text("/");
+        f.ed.showCompletions(items(3));
+        QEvent deactivated(QEvent::WindowDeactivate);
+        QApplication::sendEvent(f.ed.window(), &deactivated);
+        QVERIFY(!f.ed.completionActive());
     }
 
     // ---- performance ----

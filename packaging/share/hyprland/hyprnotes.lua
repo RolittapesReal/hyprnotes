@@ -8,7 +8,7 @@
 -- Sticky notes: floating from the very first frame (no tiled flash), fixed default size.
 hl.window_rule({
   name  = "hyprnotes-sticky",
-  match = { initial_title = "^hyprnotes-sticky:" },
+  match = { initial_title = "^hyprnotes-sticky:.*$" },
   float = true,
   size  = "360 300",
 })
@@ -16,10 +16,10 @@ hl.window_rule({
 -- Organizer: a normal centered window. Delete this rule to tile it instead.
 hl.window_rule({
   name   = "hyprnotes-organizer",
-  match  = { initial_title = "^hyprnotes-organizer:" },
+  match  = { initial_title = "^hyprnotes-organizer:.*$" },
   float  = true,
   size   = "960 640",
-  center = true,
+  move   = {"(monitor_w-960)/2", "(monitor_h-640)/2"},
 })
 
 -- Example bindings: activate the running instance (never start a second one).

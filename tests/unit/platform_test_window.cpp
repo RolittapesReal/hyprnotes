@@ -1,6 +1,8 @@
 #include "platform_fake_hyprland.h"
 #include "hn/platform/window_placement.h"
 #include <QTemporaryDir>
+#include <QFile>
+#include <QRegularExpression>
 #include <QWidget>
 #include <QtTest>
 using namespace hn::platform;
@@ -36,6 +38,33 @@ private slots:
     QCOMPARE(w.objectName(), id.token); QCOMPARE(w.property("hn.role").toString(), QString("hyprnotes-sticky"));
     QCOMPARE(w.windowTitle(), id.initialTitle());
     w.setWindowTitle("Shopping"); QCOMPARE(w.property("hn.token").toString(), id.token);
+  }
+  void packagedRoleRulesFullMatchGeneratedInitialTitles() {
+    QFile file(QStringLiteral(HN_SOURCE_DIR) + "/packaging/share/hyprland/hyprnotes.lua");
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QString lua = QString::fromUtf8(file.readAll());
+    for (const auto &[role, identityRole] : {qMakePair(QStringLiteral("sticky"), Role::Sticky),
+                                             qMakePair(QStringLiteral("organizer"), Role::Organizer)}) {
+      const QString prefix = QStringLiteral("name\\s*=\\s*\\\"hyprnotes-%1\\\"[\\s\\S]*?initial_title\\s*=\\s*\\\"([^\\\"]+)\\\"").arg(role);
+      const auto rule = QRegularExpression(prefix, QRegularExpression::DotMatchesEverythingOption).match(lua);
+      QVERIFY2(rule.hasMatch(), qPrintable("missing packaged rule for " + role));
+      const auto title = WindowIdentity::create(identityRole).initialTitle();
+      const auto wholeValue = QRegularExpression(QStringLiteral("\\A(?:%1)\\z").arg(rule.captured(1)));
+      QVERIFY2(wholeValue.isValid(), qPrintable(wholeValue.errorString()));
+      QVERIFY2(wholeValue.match(title).hasMatch(), qPrintable(QString("rule for %1 does not full-match %2").arg(role, title)));
+    }
+  }
+  void packagedOrganizerCenteringUsesScaleAwareMonitorExpressions() {
+    QFile file(QStringLiteral(HN_SOURCE_DIR) + "/packaging/share/hyprland/hyprnotes.lua");
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QString lua = QString::fromUtf8(file.readAll());
+    const auto rule = QRegularExpression(QStringLiteral("name\\s*=\\s*\\\"hyprnotes-organizer\\\"([\\s\\S]*?)\\n\\}") ,
+                                         QRegularExpression::DotMatchesEverythingOption).match(lua);
+    QVERIFY(rule.hasMatch());
+    const QString body = rule.captured(1);
+    QVERIFY2(body.contains(QStringLiteral("(monitor_w-960)/2")) && body.contains(QStringLiteral("(monitor_h-640)/2")),
+             qPrintable("organizer placement must center in monitor-local logical coordinates: " + body));
+    QVERIFY(!body.contains(QStringLiteral("center = true")));
   }
   void mappingSurvivesRenameDuplicatesAndPopOut() {
     const qint64 pid = 4242;

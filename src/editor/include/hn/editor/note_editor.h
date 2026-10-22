@@ -76,7 +76,7 @@ public:
     void focusEditor();
 
     void setTheme(const hn::theme::Theme &t);
-    hn::theme::Theme theme() const { return m_theme; }
+    const hn::theme::Theme &theme() const { return m_theme; }
 
     // ---- additive hooks for plugins ----
     // Called after a typed character; never inside code (block, inline or fenced source), during IME composition, or with a

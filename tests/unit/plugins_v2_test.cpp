@@ -53,6 +53,33 @@ private slots:
         QTest::addColumn<QString>("action");
         for (const auto *name : {"scan", "scan-after-remove", "upgrade"}) QTest::newRow(name) << QString(name);
     }
+
+    void scanFindsMidSessionEnabledPluginAndDeliversStartedOnce() {
+        Rig rig;
+        rig.mgr->appStarted();
+        const QString dir = writePlugin(rig.env.src(), "late-scan", {},
+            "hn.on('app.started', function(version) hn.log('started:' .. version) end)");
+        QVERIFY(rig.mgr->install(dir).ok);
+        QVERIFY(rig.mgr->consent("late-scan", {}));
+        QVERIFY(rig.mgr->trust()->setEnabled("late-scan", true));
+        QVERIFY(rig.mgr->scan());
+        QCOMPARE(rig.logsOf("late-scan"), QStringList{"started:0.2.1"});
+        QVERIFY(rig.mgr->scan());
+        QCOMPARE(rig.logsOf("late-scan"), QStringList{"started:0.2.1"});
+    }
+    void disabledPluginSettingsSurviveCacheRewriteAndRescan() {
+        Rig rig;
+        QVERIFY(rig.setup(writePlugin(rig.env.src(), "cfgp", {}, "hn.setting{id='flag',type='bool',default=false,title='Flag'}")));
+        QVERIFY(rig.mgr->disable("cfgp"));
+        QCOMPARE(rig.mgr->registry()->settings("cfgp").size(), 1);
+        // enabling another plugin rewrites the registration cache; it must keep the disabled plugin's settings
+        QVERIFY(rig.setup(writePlugin(rig.env.src(), "other", {}, "hn.command{id='c',title='C',run=function() end}")));
+        rig.mgr->scan();
+        QCOMPARE(rig.mgr->registry()->settings("cfgp").size(), 1);
+        QFile cache(rig.env.state() + "/plugins-registry.json");
+        QVERIFY(cache.open(QIODevice::ReadOnly));
+        QVERIFY2(cache.readAll().contains("cfgp"), "registration cache dropped the disabled plugin");
+    }
     void replacementPathsCannotMutateAnActiveCallback() {
         QFETCH(QString, action);
         Rig rig;
@@ -63,11 +90,11 @@ private slots:
         rig.mgr->setPanelActive("life", "p", true);
         QList<PanelBlock> blocks;
         QVERIFY(rig.mgr->renderPanel("life", "p", &rig.note, &blocks, &error));
-        bool held = false, busy = false, upgradeRefused = false;
+        bool held = false, busy = false, upgradeRefused = false, scanReported = true;
         lib.onOpen = [&] {
             hostRefresh(*rig.mgr, &rig.note);
             if (action == "scan-after-remove") rig.mgr->remove("life");
-            if (action.startsWith("scan")) rig.mgr->scan();
+            if (action.startsWith("scan")) scanReported = rig.mgr->scan();
             else {
                 const auto result = rig.mgr->install(rig.env.src() + "/life", true);
                 upgradeRefused = !result.ok && !result.errors.isEmpty() && result.errors.front().message.contains("busy");
@@ -78,6 +105,7 @@ private slots:
         QVERIFY2(rig.mgr->panelClick("life", "p", blocks.front().click, &rig.note, &error), qPrintable(error));
         QVERIFY(held);
         QVERIFY(busy);
+        if (action.startsWith("scan")) QVERIFY2(!scanReported, "a scan skipped because a callback is running must say so");
         if (action == "upgrade") QVERIFY(upgradeRefused);
         if (action != "scan-after-remove") {
             QCOMPARE(rig.mgr->info("life").status, Status::Enabled);
@@ -554,6 +582,16 @@ hn.on('note.closed',function(arg) hn.log('closed:'..arg) end)
         for (int i = 6; i < 14; ++i) QCOMPARE(l[i], QString("bad:false"));
         QVERIFY(l[14].contains("invalid note path"));
         QVERIFY(auditText(r).contains("notes.rename"));
+    }
+    void cancelledRenameWithLinkUpdatesHasDistinctResult() {
+        Rig r;
+        r.lib.forced = BridgeStatus::Cancelled;
+        QVERIFY(add(r, "cancel", kAll, cmd(R"LUA(
+          local value, err = hn.notes.rename('notes/a.md', 'renamed.md', {update_links = true})
+          hn.log(tostring(value) .. '|' .. tostring(err))
+        )LUA")));
+        QVERIFY(runT(r, "cancel"));
+        QCOMPARE(r.logsOf("cancel").last(), QString("nil|cancelled"));
     }
     void renameWithoutWriteNeverReachesTheBridge() {
         Rig r;

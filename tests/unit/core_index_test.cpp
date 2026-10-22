@@ -1,8 +1,10 @@
+#include "sanitizer_build.h"
 #include "hn/core/library_index.h"
 #include "hn/core/worker.h"
 #include <QtTest>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <random>
 using namespace hn::core;
 
@@ -29,6 +31,16 @@ class IndexTest : public QObject {
         return true;
     }
 private slots:
+    void sqliteMinimumVersionIsEnforced() {
+        QVERIFY(hn::core::sqliteVersionSupported("3.35.0"));
+        QVERIFY(hn::core::sqliteVersionSupported("3.53.4"));
+        QVERIFY(hn::core::sqliteVersionSupported("4.0.0"));
+        QVERIFY(!hn::core::sqliteVersionSupported("3.34.1"));
+        QVERIFY(!hn::core::sqliteVersionSupported("3.8.11"));
+        QVERIFY(!hn::core::sqliteVersionSupported("2.99"));
+        QVERIFY(!hn::core::sqliteVersionSupported(""));
+        QVERIFY(!hn::core::sqliteVersionSupported("garbage"));
+    }
     void init() {
         QDir(m_root.path()).removeRecursively();
         QDir(m_cache.path()).removeRecursively();
@@ -54,6 +66,55 @@ private slots:
         w.waitIdle();
         QCOMPARE(order, (QStringList{"first", "save1", "save2", "index1", "coalesced-new", "index2"}));
         QCOMPARE(w.callBlocking(Worker::Save, [] { return 42; }), 42);
+    }
+
+    void callBlockingWaitsForTaskCaptureDestruction() {
+        Worker w;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool destructorEntered = false;
+        bool releaseDestructor = false;
+        std::atomic<bool> callerReturned = false;
+        std::atomic<int> result = 0;
+        struct BlockingCapture {
+            std::mutex *mutex;
+            std::condition_variable *cv;
+            bool *entered;
+            bool *release;
+            ~BlockingCapture() {
+                std::unique_lock lock(*mutex);
+                *entered = true;
+                cv->notify_all();
+                cv->wait(lock, [&] { return *release; });
+            }
+        };
+        auto capture = std::make_shared<BlockingCapture>();
+        capture->mutex = &mutex;
+        capture->cv = &cv;
+        capture->entered = &destructorEntered;
+        capture->release = &releaseDestructor;
+        auto task = [capture = std::move(capture)] { return 42; };
+        std::thread caller([&] {
+            result = w.callBlocking(Worker::Index, std::move(task));
+            callerReturned = true;
+            cv.notify_all();
+        });
+
+        bool entered = false;
+        bool returnedWhileDestructorBlocked = false;
+        {
+            std::unique_lock lock(mutex);
+            entered = cv.wait_for(lock, std::chrono::seconds(5), [&] { return destructorEntered; });
+            if (entered)
+                cv.wait_for(lock, std::chrono::milliseconds(100), [&] { return callerReturned.load(); });
+            returnedWhileDestructorBlocked = callerReturned.load();
+            releaseDestructor = true;
+        }
+        cv.notify_all();
+        caller.join();
+        QVERIFY(entered);
+        QVERIFY(!returnedWhileDestructorBlocked);
+        QCOMPARE(result.load(), 42);
     }
 
     void basicsTitlesFoldersTags() {
@@ -100,6 +161,46 @@ private slots:
             QVERIFY2(!rows.isEmpty() && rows[0].relPath == "probe.md", q);
         }
     }
+    void literalPreferenceMatchesBruteForceAcrossEdits() {
+        // The raw-literal preference (literal substring of body/title first, then rank) must hold for every query shape,
+        // including after notes are rewritten and deleted (the trigram postings are maintained with the FTS rows).
+        const QStringList lits = {"C++", "e.g.", "it's", "\"quoted\"", "AND", QString::fromUtf8("日本語"), QString::fromUtf8("😀 ok"), "a:b", "50%"};
+        std::mt19937 rng(7);
+        auto body = [&](int i) {
+            QString b = QString("# Note %1\n\n").arg(i);
+            for (int k = 0; k < 30; ++k) b += (rng() % 5 == 0 ? lits[rng() % lits.size()] : QString("c e g it s quoted and ok a b 50 x y")) + " ";
+            return b.toUtf8();
+        };
+        QHash<QString, QByteArray> files;
+        for (int i = 0; i < 60; ++i) { files[QString("n%1.md").arg(i)] = body(i); writeFile(abs(QString("n%1.md").arg(i)), files[QString("n%1.md").arg(i)]); }
+        auto idx = newIndex();
+        QVERIFY(syncAndWait(*idx));
+        auto check = [&] {
+            for (const QString &q : lits + QStringList{"C+", QString::fromUtf8("日本"), "e.g"}) {
+                const auto rows = idx->searchNow({.text = q, .limit = 500}).rows;
+                bool seenPlain = false, seenLiteral = false;
+                for (const auto &r : rows) {
+                    const bool literal = files.value(r.relPath).contains(q.toUtf8());
+                    seenLiteral |= literal;
+                    QVERIFY2(!(literal && seenPlain), qPrintable(QString("%1: %2 has the literal but ranks after a note without it").arg(q, r.relPath)));
+                    seenPlain |= !literal;
+                }
+                if (lits.contains(q)) QVERIFY2(seenLiteral, qPrintable(q));
+            }
+        };
+        check();
+        for (int i = 0; i < 20; ++i) { const QString n = QString("n%1.md").arg(i * 3); files[n] = i % 2 ? body(1000 + i) : QByteArray("# Gone literal\n\nplain c e g it s words\n"); writeFile(abs(n), files[n]); }
+        for (int i = 0; i < 10; ++i) { const QString n = QString("n%1.md").arg(i * 5 + 1); QFile::remove(abs(n)); files.remove(n); }
+        QVERIFY(syncAndWait(*idx));
+        check();
+    }
+    void queryWithNulStillSearches() {
+        writeFile(abs("a.md"), "# A\n\nfoo C++ bar\n");
+        auto idx = newIndex();
+        QVERIFY(syncAndWait(*idx));
+        const auto page = idx->searchNow({.text = QString::fromLatin1("C++\0x", 5), .limit = 5});
+        QVERIFY2(page.error.isEmpty(), qPrintable(page.error));   // a NUL must not turn into an FTS5 syntax error
+    }
     void searchSemantics() {
         writeFile(abs("a.md"), "# Café society\n\nthe quick brown fox\n");
         writeFile(abs("b.md"), "# Other\n\nquick thinking about foxes\n");
@@ -117,6 +218,26 @@ private slots:
         QCOMPARE(idx->searchNow({.text = "qui\" OR \"x"}).rows.size(), 0);
         auto p = idx->searchNow({.text = "brown"});
         QVERIFY(p.rows[0].snippet.contains("[brown]"));
+    }
+    void sanitizedFinalTermKeepsCaseInsensitivePrefixSemantics() {
+        writeFile(abs("english.md"), "# English\n\ncats are here\n");
+        writeFile(abs("cplus.md"), "# Cplusplus\n\nalpha Cplusplus suffix\n");
+        writeFile(abs("japanese.md"), QString::fromUtf8("# 日本語文章\n\n日本語文章です\n").toUtf8());
+        auto idx = newIndex();
+        QVERIFY(syncAndWait(*idx));
+
+        auto pathsFor = [&](const QString &query) {
+            QStringList paths;
+            for (const auto &row : idx->searchNow({.text = query}).rows) paths << row.relPath;
+            paths.sort();
+            return paths;
+        };
+        QCOMPARE(pathsFor(QStringLiteral("CAT")), QStringList{"english.md"});
+        QCOMPARE(pathsFor(QString::fromUtf8("日本語")), QStringList{"japanese.md"});
+        const QStringList cplusplusMatches = pathsFor(QStringLiteral("C++"));
+        QCOMPARE(cplusplusMatches, QStringList({"cplus.md", "english.md"}));
+        QVERIFY(!cplusplusMatches.contains(QStringLiteral("japanese.md")));
+        QCOMPARE(pathsFor(QStringLiteral("alpha C++")), QStringList{"cplus.md"});
     }
     void incrementalUpdates() {
         for (int i = 0; i < 20; ++i) writeFile(abs(QString("n%1.md").arg(i)), QString("# N%1\n\nbody %1 #t%1\n").arg(i).toUtf8());
@@ -360,7 +481,12 @@ private slots:
         std::sort(ms.begin(), ms.end());
         double p50 = ms[ms.size() / 2], p95 = ms[size_t(ms.size() * 0.95)], mx = ms.back();
         qInfo().noquote() << QString("MEASURED first-page search over %1 queries: p50=%2 ms p95=%3 ms max=%4 ms").arg(ms.size()).arg(p50, 0, 'f', 2).arg(p95, 0, 'f', 2).arg(mx, 0, 'f', 2);
+        // 100 ms is the Release budget; a sanitizer (and valgrind) makes the same query 3x to 40x slower, so there it only has to stay bounded
+#ifdef HN_TEST_SANITIZED
+        QVERIFY2(p95 < 100.0 * 8, "first-page p95 must be < 800 ms under a sanitizer");
+#else
         QVERIFY2(p95 < 100.0, "first-page p95 must be < 100ms");
+#endif
         // incremental: touch 5 notes
         for (int i = 0; i < 5; ++i) writeFile(abs(QString("f%1/note%2.md").arg(i).arg(i)), QString("# Touched %1\n\nshort #tt\n").arg(i).toUtf8());
         t.restart();

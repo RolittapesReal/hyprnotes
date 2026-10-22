@@ -63,6 +63,20 @@ private slots:
         errs.clear();
         QVERIFY(!packDirectory(ok, ok + "/out.hnplugin", &errs));
     }
+    void packWriteFailurePreservesSourceAndDestination() {
+        const auto dir = writePlugin(env.src(), "pack-write-error", {"ui"}, "-- keep\n");
+        const auto hash = hashDirectory(dir);
+        const auto output = arch("blocked.hnplugin");
+        QVERIFY(QDir().mkpath(output));
+        writeFile(output + "/keep.txt", "untouched\n");
+        QList<PluginError> errors;
+        QVERIFY(!packDirectory(dir, output, &errors));
+        QCOMPARE(errors.size(), 1);
+        QVERIFY2(errors.first().message.contains("cannot write " + output), qPrintable(errors.first().message));
+        QCOMPARE(hashDirectory(dir), hash);
+        QVERIFY(QFileInfo(output).isDir());
+        QCOMPARE(readFile(output + "/keep.txt"), QByteArray("untouched\n"));
+    }
     void tarGzAndWrappedFolder() {
         // "archive of the folder itself": single top-level directory
         QList<AEntry> e{{"wrapped/", {}, AE_IFDIR}, {"wrapped/plugin.json", manifestJson("wrapped", {"ui"})}, {"wrapped/main.lua", "-- x\n"}};

@@ -1,4 +1,5 @@
 #include "hn/core/fs_util.h"
+#include <system_error>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
@@ -77,7 +78,7 @@ CasResult casWrite(const QString &abs, const QByteArray &bytes, const QByteArray
             if (ex && !readAll(abs, &cur, &e)) return fail(e);
             if (expect->isEmpty() ? ex : (!ex || contentHash(cur) != *expect)) { drop(tmp); if (found) *found = cur; return CasResult::Mismatch; }
         }
-        if (::rename(t.constData(), a.constData()) != 0) return fail(QString::fromLocal8Bit(strerror(errno)));
+        if (::rename(t.constData(), a.constData()) != 0) return fail(QString::fromStdString(std::generic_category().message(errno)));
         return CasResult::Ok;
     };
     if (!expect) return plain();

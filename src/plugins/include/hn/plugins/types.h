@@ -17,7 +17,7 @@ namespace hn::plugins {
 
 inline constexpr int kApiVersion = 1;     // the original API; plugins declaring "api": 1 see exactly this surface
 inline constexpr int kApiVersionMax = 2;  // newest API this app supports ("api": 2 adds notes.index, panels, completion, link handlers)
-inline constexpr const char *kAppVersion = "0.2.0";
+inline constexpr const char *kAppVersion = "0.2.1";
 
 // Caps from the design spec.
 inline constexpr qint64 kMaxArchiveBytes = 5 * 1024 * 1024;
@@ -93,7 +93,7 @@ struct NoteInfo { QString path, title; };
 
 // ---- API 2 bridge data ----
 // Result of an API-2 bridge call. The index side enforces its own 100 ms budget and reports it as Timeout.
-enum class BridgeStatus { Ok, Unsupported, Timeout, Invalid, NotFound };
+enum class BridgeStatus { Ok, Unsupported, Timeout, Invalid, NotFound, Cancelled };
 struct LinkRow {  // one [[link]]: outgoing (links) or incoming (backlinks, src = the note containing it)
     QString kind, target, alias, anchor, resolved, src, context;  // kind: "link" | "embed"; resolved = note path or empty
     int line = 0;
@@ -229,6 +229,8 @@ class PluginRegistry : public QObject {
 public:
     using QObject::QObject;
     void set(const QString &pluginId, const PluginRegs &r);
+    void setDisabledSettings(const QString &pluginId, const QList<SettingReg> &settings);
+    QList<SettingReg> disabledSettings(const QString &pluginId) const { return disabledSettings_.value(pluginId); }
     void remove(const QString &pluginId);
     void clear();
     const PluginRegs *of(const QString &pluginId) const;
@@ -246,6 +248,7 @@ signals:
     void changed();
 private:
     QMap<QString, PluginRegs> m_;
+    QMap<QString, QList<SettingReg>> disabledSettings_;
 };
 
 }  // namespace hn::plugins

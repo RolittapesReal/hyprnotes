@@ -1,12 +1,15 @@
 #include "completion_popup.h"
 
+#include <QByteArray>
 #include <QGuiApplication>
+#include <QHelpEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
 #include <QTextLayout>
 #include <QWheelEvent>
+#include <QToolTip>
 #include <QtMath>
 
 namespace hn::editor {
@@ -136,30 +139,50 @@ void CompletionPopup::wheelEvent(QWheelEvent *e)
     e->accept();
 }
 
-// Characters of `label` to emphasise: first case-insensitive substring hit of the query, else an in-order subsequence.
-static QList<bool> matchMask(const QString &label, const QString &q)
+bool CompletionPopup::event(QEvent *event)
 {
-    QList<bool> m(label.size(), false);
+    if (event->type() == QEvent::ToolTip) {
+        auto *help = static_cast<QHelpEvent *>(event);
+        const int row = rowAt(help->pos());
+        const QString detail = row >= 0 ? m_items[row].detail : QString();
+        if (!detail.isEmpty()) {
+            const QString rich = QStringLiteral("<qt>") + detail.toHtmlEscaped() + QStringLiteral("</qt>");
+            setToolTip(rich);
+            QToolTip::showText(help->globalPos(), rich, this);
+        } else {
+            setToolTip({});
+            QToolTip::hideText();
+        }
+        event->accept();
+        return true;
+    }
+    return QWidget::event(event);
+}
+
+// Characters of `label` to emphasise: first case-insensitive substring hit of the query, else an in-order subsequence.
+static QByteArray matchMask(const QString &label, const QString &q)
+{
+    QByteArray m(label.size(), '\0');
     if (q.isEmpty()) return m;
     const int at = label.indexOf(q, 0, Qt::CaseInsensitive);
     if (at >= 0) { for (int i = 0; i < q.size(); ++i) m[at + i] = true; return m; }
     int qi = 0;
     for (int i = 0; i < label.size() && qi < q.size(); ++i)
         if (label[i].toLower() == q[qi].toLower()) { m[i] = true; ++qi; }
-    if (qi < q.size()) m.fill(false);
+    if (qi < q.size()) m.fill('\0');
     return m;
 }
 
-static QList<QTextLayout::FormatRange> highlights(const QString &original, const QString &label,
-                                                 const QString &query, const QColor &accent)
+QList<QTextLayout::FormatRange> CompletionPopup::highlightFormats(const QString &original, const QString &label,
+                                                                  const QString &query, const QColor &accent)
 {
     const auto mask = matchMask(original, query);
     const int retained = label.size() - (label != original && label.endsWith(QChar(0x2026)) ? 1 : 0);
     QList<QTextLayout::FormatRange> formats;
     for (int i = 0; i < retained;) {
-        if (!mask.value(i)) { ++i; continue; }
+        if (!mask.at(i)) { ++i; continue; }
         const int start = i++;
-        while (i < retained && mask.value(i)) ++i;
+        while (i < retained && mask.at(i)) ++i;
         QTextCharFormat format;
         format.setFontWeight(QFont::DemiBold);
         format.setForeground(accent);
@@ -183,6 +206,9 @@ CompletionPopup::RowLayout CompletionPopup::rowLayout(int index) const
     const int detailWidth = item.detail.isEmpty() ? 0 : qMin(fm.horizontalAdvance(item.detail), row.width() * 9 / 20);
     result.detailRect = QRect(right - detailWidth, row.top(), detailWidth, row.height());
     result.detailText = fm.elidedText(item.detail, Qt::ElideRight, detailWidth);
+    // elidedText measures fractional advances; horizontalAdvance rounds, so the result can overshoot by <1 px: tighten until it fits
+    for (int b = detailWidth - 1; b > 0 && fm.horizontalAdvance(result.detailText) > detailWidth; --b)
+        result.detailText = fm.elidedText(item.detail, Qt::ElideRight, b);
     result.labelRect = QRect(row.left() + 12, row.top(), qMax(0, right - detailWidth - (detailWidth ? 12 : 0) - row.left() - 12), row.height());
     int budget = result.labelRect.width();
     while (budget > 0) {
@@ -192,7 +218,7 @@ CompletionPopup::RowLayout CompletionPopup::rowLayout(int index) const
         QTextOption option;
         option.setWrapMode(QTextOption::NoWrap);
         layout.setTextOption(option);
-        layout.setFormats(highlights(item.label, result.labelText, m_query, m_t.accent));
+        layout.setFormats(highlightFormats(item.label, result.labelText, m_query, m_t.accent));
         layout.beginLayout();
         QTextLine line = layout.createLine();
         if (line.isValid()) line.setLineWidth(result.labelRect.width());
@@ -245,7 +271,7 @@ void CompletionPopup::paintEvent(QPaintEvent *)
         QTextOption option;
         option.setWrapMode(QTextOption::NoWrap);
         layout.setTextOption(option);
-        layout.setFormats(highlights(m_items[i].label, text.labelText, m_query, m_t.accent));
+        layout.setFormats(highlightFormats(m_items[i].label, text.labelText, m_query, m_t.accent));
         layout.beginLayout();
         QTextLine line = layout.createLine();
         if (line.isValid()) line.setLineWidth(text.labelRect.width());

@@ -1,0 +1,3 @@
+workspace>>3
+openwindow>>0x123,2,terminal,Shell
+configreloaded>>

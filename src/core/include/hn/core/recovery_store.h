@@ -30,6 +30,8 @@ public:
     void resolve(const QString &root, const QString &rel) const; // move to history + prune
     QList<RecoveryEntry> unresolved(const QString &root = {}) const;
     qint64 resolvedBytes() const;
+    size_t historyEntries() const; // resolved entries tracked in memory (at most kMaxHistoryEntries)
+    static constexpr size_t kMaxHistoryEntries = 4096; // oldest are evicted beyond this, like beyond the byte cap
     void prune() const; // amortised O(1): the history is walked once per store, then tracked incrementally
     QString dir() const { return m_dir; }
 

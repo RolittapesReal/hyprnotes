@@ -1,0 +1,36 @@
+# Findings of tests/static/run.sh that are reviewed and accepted. Format: <file>:<check> | <reason>
+# "max=N" is the number of distinct sites allowed (default 1), so a new finding of the same check in the same file still fails.
+# Matching is per file and check (no line numbers, so edits do not invalidate entries). Compiler warnings are never accepted.
+src/app/sticky_window.cpp:clang-analyzer-cplusplus.NewDeleteLeaks | `new QShortcut(..., this)`: the parent owns it; the analyser does not model QObject parent ownership
+src/platform/hyprland_ipc.cpp:clang-analyzer-cplusplus.NewDeleteLeaks max=4 | request() hands its reply object to Qt's event loop (deleted in its finished handler); not modelled by the analyser
+src/platform/window_placement.cpp:clang-analyzer-core.CallAndMessage | `best` is always set: bestArea starts at -1 and every area is >= 0, so the first monitor wins; the analyser cannot prove a >= 0
+src/plugins/luapattern.cpp:clang-analyzer-core.NullDereference | gsub loop: `e` is non-null whenever the branch is taken; `lastmatch` starts null only for the e != lastmatch comparison
+src/plugins/luapattern.cpp:bugprone-inc-dec-in-conditions max=2 | line-for-line port of Lua's lstrlib.c class scanning (`*(p++)`); rewriting it would diverge from the reference
+src/plugins/luapattern.cpp:bugprone-misplaced-widening-cast | size_t -> lua_Integer on a pointer difference plus a pattern length, both far below 2^63
+src/app/plugin_bridges.h:clang-analyzer-optin.cplusplus.VirtualCall | the destructor intentionally ends the open transaction with this class's own implementation (called qualified, nothing dispatches to a derived class)
+src/app/signal_bridge.cpp:cert-err33-c | std::signal(s, SIG_DFL) in the destructor restores defaults; there is no recovery if it fails
+src/core/fs_util.cpp:bugprone-throwing-static-initialization | function-local-free static QByteArray tag built at startup; bad_alloc there is fatal either way
+src/core/fs_util.cpp:cert-err58-cpp | same as above
+src/theme/theme.cpp:bugprone-throwing-static-initialization | static QFont created at startup; bad_alloc there is fatal either way
+src/theme/theme.cpp:cert-err58-cpp | same as above
+src/theme/theme_io.cpp:bugprone-throwing-static-initialization | static QString constant; bad_alloc at startup is fatal either way
+src/theme/theme_io.cpp:cert-err58-cpp | same as above
+tests/stress/stress_app.cpp:containerOutOfBounds | Both call sites pass `batches=5`; the loop appends one snapshot per iteration before return, so `s` has five entries at `last()`
+tests/stress/stress_app.cpp:uninitMemberVarNoCtor | `Case` is an aggregate; every initializer-list row initializes both `name` and `op`
+tests/stress/stress_repo.cpp:containerOutOfBounds max=4 | loop deterministically appends checkpoints at i=10,500,1500,3000,8000 before reading first/last
+tests/stress/stress_scale.cpp:containerOutOfBounds | quick-mode RHS reads indices 0 and 2 from the pre-assignment three-element list; assignment occurs after RHS construction
+src/core/library_index.cpp:danglingTempReference max=13 | cppcheck false positive: `for (x : f().member)` binds the range to a member of a prvalue, which extends the whole temporary's lifetime (f returns by value)
+src/app/plugin_bridges.cpp:danglingTempReference max=2 | same: searchNow() returns SearchPage by value, `.rows` extends it
+src/app/plugin_bridges.cpp:nullPointerRedundantCheck | nam() creates or returns non-null private QNetworkAccessManager; QPointer reaches QObject::connect before event-loop entry. Keep post-loop guards: pending-reply destruction regression covers manager/reply teardown.
+tests/live/qt_driver.cpp:CastIntegerToAddressAtReturn | Qt QPointer<ConsentDialog> converts to guarded ConsentDialog* (nullable), then standard QWidget base pointer; no integer-to-address cast.
+src/app/ui_common.cpp:CastIntegerToAddressAtReturn | cppcheck false positive: returns a QPointer<ThemeNotifier> converted to the raw pointer, not an integer
+src/app/organizer_window.h:CastIntegerToAddressAtReturn | cppcheck false positive: returns a QPointer member converted to the raw pointer
+src/app/controller.h:CastIntegerToAddressAtReturn | cppcheck false positive: returns a QPointer member converted to the raw pointer
+src/app/plugin_bridges.cpp:noCopyConstructor | PluginNetBridge is a QObject, which is already non-copyable
+src/app/plugin_bridges.cpp:noOperatorEq | same as above
+src/app/note_session.cpp:useInitializationList | m_editor must exist before m_toolbar takes a pointer to it; the member order in the header does not allow initialising it first without reordering the whole class
+src/core/fs_util.cpp:bugprone-narrowing-conversions | QString::lastIndexOf on a file name: bounded by NAME_MAX (255), far below INT_MAX
+src/core/include/hn/core/library_index.h:bugprone-narrowing-conversions | cachedRows() is the size of a page cache capped at a few thousand rows
+src/core/library_index.cpp:bugprone-narrowing-conversions | dirOf: lastIndexOf on a note path (PATH_MAX-bounded)
+src/core/markdown_codec.cpp:bugprone-narrowing-conversions | index into the open-span stack, nesting depth is bounded by the Markdown parser's block depth
+src/core/query_engine.cpp:bugprone-narrowing-conversions | nanoseconds to milliseconds as double for a timing field; precision loss beyond 2^53 ns (104 days) is irrelevant

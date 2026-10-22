@@ -329,7 +329,7 @@ static void racingWindowSweep() {
         metric(qPrintable(QString("repo.sweep.lost_at_%1us").arg(d)), lost);
         totalLost += lost; totalDetected += detected; totalTrials += 40;
     }
-    metric("repo.sweep.total_lost", totalLost); metric("repo.sweep.total_trials", totalTrials);
+    metric("repo.sweep.total_lost", totalLost); metric("repo.sweep.total_detected", totalDetected); metric("repo.sweep.total_trials", totalTrials);
     // sanity: an external write that clearly precedes the save is always detected
     writeFile(abs, "base\n"); repo.read(rel);
     replaceFile(abs, "EXT-early\n");

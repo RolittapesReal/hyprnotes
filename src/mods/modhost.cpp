@@ -65,7 +65,7 @@ static QString probeLoad(const QString &path) {
 }
 
 struct Cmd { QString modId, title; hn_command_fn fn = nullptr; void *user = nullptr; };
-struct Sub { QString modId; uint32_t type; hn_event_fn fn; void *user; };
+struct Sub { QString modId; uint32_t type = 0; hn_event_fn fn = nullptr; void *user = nullptr; };
 
 struct ModCtx {
     hn_host_api api{};

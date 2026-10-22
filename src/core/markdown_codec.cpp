@@ -22,8 +22,14 @@ QString decodeEntity(const MD_CHAR *text, MD_SIZE size) {
         bool ok = false;
         uint cp = (e[2] == 'x' || e[2] == 'X') ? e.mid(3, e.size() - 4).toUInt(&ok, 16)
                                                 : e.mid(2, e.size() - 3).toUInt(&ok, 10);
-        if (ok && cp && QChar::isNonCharacter(cp) == false && cp <= 0x10FFFF && !(cp >= 0xD800 && cp < 0xE000))
-            return QString::fromUcs4(reinterpret_cast<const char32_t *>(&cp), 1);
+        const bool disallowedControl = (cp < 0x20 && cp != '\t' && cp != '\n' && cp != '\r') || cp == 0x7f;
+        if (ok && cp && !disallowedControl && !QChar::isNonCharacter(cp) && cp <= 0x10FFFF && !(cp >= 0xD800 && cp < 0xE000)) {
+            // QString::fromUcs4 treats an initial U+FEFF as a byte-order mark and drops it. Entities are scalar text,
+            // so append BMP code points directly to preserve a literal &#65279; at the start of an entity event.
+            if (cp <= 0xFFFF) return QString(QChar(ushort(cp)));
+            const char32_t scalar = char32_t(cp);
+            return QString::fromUcs4(&scalar, 1);
+        }
         return QString(QChar::ReplacementCharacter);
     }
     static const QHash<QString, QString> named{{"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""},
@@ -235,6 +241,12 @@ bool parse(const QByteArray &utf8, unsigned flags, Ctx *ctx, MD_PARSER p) {
 
 MarkdownClass classifyMarkdown(const QByteArray &utf8, qsizetype visualLimit) {
     if (!isValidUtf8(utf8)) return {false, "File is not valid UTF-8"};
+    const qsizetype bom = utf8.indexOf("\xEF\xBB\xBF");
+    if (bom > 0 || (bom == 0 && utf8.indexOf("\xEF\xBB\xBF", 3) >= 0))
+        return {false, "Contains a misplaced UTF-8 BOM"};
+    for (unsigned char c : utf8)
+        if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7f)
+            return {false, "Contains control characters"};
     if (utf8.size() > visualLimit) return {false, QString("Note is larger than %1 KiB").arg(visualLimit / 1024)};
     if (hasFrontMatter(utf8)) return {false, "Contains front matter"};
     ClassCtx ctx;

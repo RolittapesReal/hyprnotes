@@ -12,12 +12,50 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QFileDialog>
+#include <QComboBox>
+#include <QLabel>
 
 namespace hn::app::ui {
 
 namespace {
 hn::theme::Theme g_theme;
 hn::theme::AnimationPolicy g_anim;
+
+void prepareResponsiveFileDialog(QFileDialog &dialog) {
+    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog.setLabelText(QFileDialog::FileName, dialog.fileMode() == QFileDialog::Directory
+        ? QObject::tr("&Folder:") : QObject::tr("&Name:"));
+    dialog.setLabelText(QFileDialog::FileType, QObject::tr("&Type:"));
+    for (const auto *name : {"lookInCombo", "fileTypeCombo"}) {
+        if (auto *combo = dialog.findChild<QComboBox *>(QLatin1String(name))) {
+            combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            combo->setMinimumContentsLength(QLatin1String(name) == QLatin1String("fileTypeCombo") ? 3 : 10);
+            if (QLatin1String(name) == QLatin1String("fileTypeCombo")) {
+                auto policy = combo->sizePolicy();
+                policy.setHorizontalPolicy(QSizePolicy::MinimumExpanding);
+                combo->setSizePolicy(policy);
+            }
+            QObject::connect(combo, &QComboBox::currentTextChanged, combo, &QWidget::setToolTip);
+            combo->setToolTip(combo->currentText());
+        }
+    }
+    for (const auto *name : {"fileNameLabel", "fileTypeLabel"}) {
+        if (auto *label = dialog.findChild<QLabel *>(QLatin1String(name))) {
+            label->setWordWrap(true);
+            label->setMinimumWidth(0);
+            auto policy = label->sizePolicy();
+            policy.setHorizontalPolicy(QSizePolicy::Minimum);
+            policy.setHeightForWidth(true);
+            label->setSizePolicy(policy);
+        }
+    }
+}
+
+QString runFileDialog(QFileDialog &dialog) {
+    prepareResponsiveFileDialog(dialog);
+    return dialog.exec() == QDialog::Accepted ? dialog.selectedFiles().value(0) : QString();
+}
 }
 
 const hn::theme::Theme &theme() { return g_theme; }
@@ -38,6 +76,29 @@ void setReducedMotion(bool reduced) {
             if (auto *fade = qobject_cast<FadeOverlay *>(widget)) fade->cancel();
 }
 
+QString chooseOpenFile(QWidget *parent, const QString &title, const QString &directory, const QString &filter) {
+    QFileDialog dialog(parent, title, directory, filter);
+    dialog.setAcceptMode(QFileDialog::AcceptOpen);
+    dialog.setFileMode(QFileDialog::ExistingFile);
+    return runFileDialog(dialog);
+}
+
+QString chooseSaveFile(QWidget *parent, const QString &title, const QString &fileName, const QString &filter) {
+    QFileDialog dialog(parent, title, {}, filter);
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    dialog.selectFile(fileName);
+    return runFileDialog(dialog);
+}
+
+QString chooseDirectory(QWidget *parent, const QString &title, const QString &directory) {
+    QFileDialog dialog(parent, title, directory);
+    dialog.setAcceptMode(QFileDialog::AcceptOpen);
+    dialog.setFileMode(QFileDialog::Directory);
+    dialog.setOption(QFileDialog::ShowDirsOnly, true);
+    return runFileDialog(dialog);
+}
+
 QIcon appIcon() {
     static QIcon ic;
     if (!ic.isNull()) return ic;
@@ -53,6 +114,23 @@ QIcon appIcon() {
         p.fillRect(QRect(snap(4), snap(4), snap(8), bar), Qt::white);
         p.fillRect(QRect(snap(4), snap(7), snap(8), bar), Qt::white);
         p.fillRect(QRect(snap(4), snap(10), snap(5), bar), Qt::white);
+        ic.addPixmap(pm);
+    }
+    return ic;
+}
+
+QIcon appTrayIcon(const hn::theme::Theme &theme) {
+    QIcon ic;
+    for (int px : {16, 20, 22, 24, 32, 48, 64, 128, 256}) {
+        QPixmap pm(px, px);
+        pm.fill(theme.surface);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        const auto snap = [px](qreal units) { return qRound(units * px / 16.0); };
+        const int bar = qMax(2, snap(2));
+        p.fillRect(QRect(snap(4), snap(4), snap(8), bar), theme.accent);
+        p.fillRect(QRect(snap(4), snap(7), snap(8), bar), theme.accent);
+        p.fillRect(QRect(snap(4), snap(10), snap(5), bar), theme.accent);
         ic.addPixmap(pm);
     }
     return ic;

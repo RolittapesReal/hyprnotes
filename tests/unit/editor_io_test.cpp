@@ -124,14 +124,23 @@ private slots:
         QCOMPARE(f.ed.toMarkdownBytes(), src);   // opening never rewrites
         QVERIFY(f.v->document()->blockCount() == 2);   // hard break stays inside one block
     }
-    void roundTripFailureFallsBackToSource()
+    void quotedListRoundTripsInVisualMode()
     {
-        // A list inside a block quote cannot be represented: the check must refuse visual mode and keep the bytes.
         const QByteArray src = "> - item one\n> - two\n";
         Fx f(src);
+        QCOMPARE(f.ed.mode(), Mode::Visual);
+        QVERIFY(f.ed.modeReason().isEmpty());
         QCOMPARE(f.ed.toMarkdownBytes(), src);
-        QCOMPARE(f.ed.mode(), Mode::Source);
-        QVERIFY(f.ed.modeReason().contains(QStringLiteral("check")));
+        QVERIFY(sameSemantics(QString::fromUtf8(src), f.md()));
+        f.moveEnd();
+        f.text(QStringLiteral("!"));
+        const QString edited = f.md();
+        QVERIFY2(f.ed.mode() == Mode::Visual, qPrintable(f.ed.modeReason()));
+        QCOMPARE(edited, QStringLiteral("> - item one\n> - two!\n"));
+        Fx reopened(edited.toUtf8());
+        QCOMPARE(reopened.ed.mode(), Mode::Visual);
+        QCOMPARE(reopened.plain(), f.plain());
+        QVERIFY(sameSemantics(edited, reopened.md()));
     }
     void modeSwitchIsUndoable()
     {

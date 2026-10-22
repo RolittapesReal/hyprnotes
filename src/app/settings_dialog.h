@@ -1,6 +1,7 @@
 #pragma once
 #include "controller.h"
 #include <QDialog>
+#include <QPointer>
 
 class QDragEnterEvent;
 class QDropEvent;
@@ -13,6 +14,8 @@ class QSpinBox;
 class QPushButton;
 class QTableWidget;
 class QTabWidget;
+class QScreen;
+class QShowEvent;
 
 namespace hn::app {
 
@@ -44,6 +47,8 @@ public:
     bool exportThemeTo(const QString &path);       // exports the selected theme
     bool removeSelectedTheme();                    // user themes only; falls back to modernist
 protected:
+    bool event(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dropEvent(QDropEvent *e) override;
 private:
@@ -53,6 +58,7 @@ private:
     void showNote(const QString &message);
     bool eventFilter(QObject *watched, QEvent *event) override;
     void refreshThemes(const QString &select);
+    void fitAvailableScreen();
     QWidget *tabAppearance(), *tabNotes(), *tabBehavior(), *tabKeys();
     AppController *m_c;
     QComboBox *m_scheme, *m_theme;
@@ -64,6 +70,9 @@ private:
     QTableWidget *m_keys;
     QTabWidget *m_tabs;
     PluginsPage *m_pluginsPage;
+    QPointer<QScreen> m_screen;
+    QMetaObject::Connection m_screenGeometryConnection;
+    bool m_fittingScreen = false;
     bool m_loading = true;
     bool m_keysResizePending = false;
 };

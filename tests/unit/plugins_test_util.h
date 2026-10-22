@@ -1,4 +1,5 @@
 #pragma once
+#include "sanitizer_build.h"
 #include "hn/plugins/runtime.h"
 #include <QDir>
 #include <QFile>
@@ -207,6 +208,19 @@ struct FakeTheme : ThemeBridge {
     bool setToken(const QString &, const QString &t, const QString &v) override { sets << t + "=" + v; return true; }
 };
 
+// Sanitizer slowdown factor for tests whose workload is heavy enough that the host's wall-clock budgets (events 50 ms, commands 2 s, load
+// 250 ms ...) would be hit by the instrumentation alone (plugins_hardening, which runs 100k-allocation scripts and pattern bombs). Such a
+// test builds a SlowRig, which multiplies the budgets by kSlow, and multiplies its own timing assertions: the limits are still enforced,
+// only later. Tests that assert the budgets themselves (plugins_sandbox, plugins_v2, plugins_examples) use the plain Rig. The performance
+// gate is the Release run, not the sanitizer builds.
+#ifdef HN_TEST_SANITIZED
+inline constexpr int kSlow = 4;
+inline constexpr bool kSanitized = true;
+#else
+inline constexpr int kSlow = 1;
+inline constexpr bool kSanitized = false;
+#endif
+
 // A manager wired to fakes, with every hn.log line captured.
 struct Rig {
     TmpEnv env;
@@ -241,6 +255,15 @@ struct Rig {
         QStringList r;
         for (const auto &l : logs) if (l.startsWith(id + ": ")) r << l.mid(id.size() + 2);
         return r;
+    }
+};
+
+struct SlowRig : Rig {
+    // factor: kSlow by default; scripts that do a fixed large amount of work (not "loop until the budget") ask for more headroom
+    explicit SlowRig(int f = kSlow) {
+        auto &e = mgr->host()->env();
+        e.eventMs *= f; e.commandMs *= f; e.preSaveMs *= f; e.triggerMs *= f; e.loadMs *= f;
+        e.renderMs *= f; e.completeMs *= f; e.indexCallMs *= f; e.indexCallbackMs *= f;
     }
 };
 

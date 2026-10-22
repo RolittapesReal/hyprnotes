@@ -1,11 +1,16 @@
 #include "hn/platform/instance_transport.h"
 #include <QDeadlineTimer>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QLocalSocket>
 #include <QLockFile>
 #include <QTimer>
 #include <QVariant>
+#include <cerrno>
+#include <cstddef>
+#include <cstring>
+#include <sys/un.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -17,14 +22,28 @@ QString actionName(Action a) {
   case Action::ShowOrganizer: return QStringLiteral("show-organizer");
   case Action::NewNote: return QStringLiteral("new-note");
   case Action::Background: return QStringLiteral("background");
+  case Action::RefreshPlugins: return QStringLiteral("refresh-plugins");
   }
   return {};
 }
 
 static bool parseAction(const QByteArray& s, Action* out) {
-  for (Action a : {Action::ShowOrganizer, Action::NewNote, Action::Background})
+  for (Action a : {Action::ShowOrganizer, Action::NewNote, Action::Background, Action::RefreshPlugins})
     if (s == actionName(a).toLatin1()) { *out = a; return true; }
   return false;
+}
+
+bool decodeInstanceRequest(const QByteArray& line, Action* action, QString* error) {
+  const auto parts = line.trimmed().split(' ');
+  auto fail = [&](const char* why) { if (error) *error = QString::fromLatin1(why); return false; };
+  if (parts.size() != 3 || parts[0] != "HNIPC") return fail("malformed request");
+  bool ok = false;
+  const int version = parts[1].toInt(&ok);
+  if (!ok) return fail("malformed version");
+  if (version != kProtocolVersion) return fail("incompatible version");
+  if (!parseAction(parts[2], action)) return fail("unknown command");
+  if (error) error->clear();
+  return true;
 }
 
 QString defaultEndpointPath() {
@@ -45,6 +64,60 @@ bool endpointIsSafe(const QString& path, QString* why) {
   return true;
 }
 
+enum class EndpointProbe { NoListener, Unconfirmed, Hyprnotes };
+
+static bool endpointHasNoListener(const QString& path) {
+  const QByteArray encoded = QFile::encodeName(path);
+  sockaddr_un address{};
+  if (encoded.isEmpty() || size_t(encoded.size()) >= sizeof(address.sun_path)) return false;
+  address.sun_family = AF_UNIX;
+  std::memcpy(address.sun_path, encoded.constData(), size_t(encoded.size()));
+  address.sun_path[encoded.size()] = '\0';
+
+  const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (fd < 0) return false;
+  const socklen_t length = socklen_t(offsetof(sockaddr_un, sun_path) + size_t(encoded.size()) + 1);
+  const int result = ::connect(fd, reinterpret_cast<sockaddr*>(&address), length);
+  const int connectError = errno;
+  ::close(fd);
+  return result != 0 && (connectError == ECONNREFUSED || connectError == ENOENT);
+}
+
+static EndpointProbe probeEndpoint(const QString& path) {
+  QLocalSocket socket;
+  QElapsedTimer connectTimer;
+  connectTimer.start();
+  socket.connectToServer(path);
+  if (!socket.waitForConnected(500)) {
+    socket.abort();
+    if (connectTimer.elapsed() >= 500) return EndpointProbe::Unconfirmed;
+    // Qt maps both refusal and timeout to ConnectionRefusedError. Confirm
+    // staleness with a nonblocking AF_UNIX connect; EAGAIN/EINPROGRESS remain
+    // unconfirmed, so a busy live listener is never unlinked.
+    return endpointHasNoListener(path) ? EndpointProbe::NoListener : EndpointProbe::Unconfirmed;
+  }
+
+  // Unknown action is rejected before dispatch, so this confirms HNIPC without
+  // opening a window, creating a note, or changing application state.
+  const QByteArray request("HNIPC 1 __hn_probe__\n");
+  const QByteArray expected("HNIPC 1 err unknown-command\n");
+  socket.setReadBufferSize(expected.size() + 1);
+  if (socket.write(request) != request.size() || !socket.flush() || !socket.waitForReadyRead(500)) {
+    socket.abort();
+    return EndpointProbe::Unconfirmed;
+  }
+  // Read at most one byte beyond the only valid reply. The Qt-side receive
+  // buffer has same bound, so a peer flooding the socket cannot make readAll()
+  // allocate/drain an unbounded response. Require EOF within a bounded window
+  // and reject any delayed tail bytes already queued at close.
+  QByteArray response = socket.read(expected.size() + 1);
+  const bool closed = response.size() == expected.size() && socket.waitForDisconnected(500);
+  const bool noTail = socket.bytesAvailable() == 0 && response.size() == expected.size();
+  socket.abort();
+  return response == expected && closed && noTail
+      ? EndpointProbe::Hyprnotes : EndpointProbe::Unconfirmed;
+}
+
 // ---------------------------------------------------------------- server
 InstanceServer::InstanceServer(QString p, QObject* parent) : QObject(parent), m_path(std::move(p)) {
   m_server.setSocketOptions(QLocalServer::UserAccessOption);
@@ -56,15 +129,32 @@ InstanceServer::Result InstanceServer::listen(QString* error) {
   if (m_path.isEmpty()) return fail(QStringLiteral("no XDG_RUNTIME_DIR/WAYLAND_DISPLAY: not in a desktop session"));
   QLockFile lock(m_path + QStringLiteral(".lock"));
   lock.setStaleLockTime(5000);
-  if (!lock.tryLock(3000)) return fail(QStringLiteral("could not lock instance endpoint"));
+  if (!lock.tryLock(3000)) {
+    bool unconfirmedPeer = false;
+    // Another starter may still own the lock after binding. Confirm its protocol
+    // before declaring a lost race; never remove or replace an endpoint without the lock.
+    if (lock.error() == QLockFile::LockFailedError && QFile::exists(m_path) && endpointIsSafe(m_path)) {
+      const auto probe = probeEndpoint(m_path);
+      if (probe == EndpointProbe::Hyprnotes) return Result::AlreadyRunning;
+      unconfirmedPeer = probe == EndpointProbe::Unconfirmed;
+    }
+    // Lock ownership can span a slow first-start path before its socket is
+    // connectable. Give that same in-progress startup one final bounded window.
+    if (lock.error() != QLockFile::LockFailedError || !lock.tryLock(3000))
+      return fail(unconfirmedPeer
+          ? QStringLiteral("endpoint is busy but did not confirm the Hyprnotes protocol")
+          : QStringLiteral("could not lock instance endpoint"));
+  }
 
   if (QFile::exists(m_path)) {
     QString why;
     if (!endpointIsSafe(m_path, &why)) return fail(QStringLiteral("refusing endpoint: ") + why);
-    QLocalSocket probe;
-    probe.connectToServer(m_path);
-    if (probe.waitForConnected(500)) { probe.abort(); return Result::AlreadyRunning; }
-    // Nothing answered: stale (crashed instance). Safe to remove while we hold the lock.
+    const auto probe = probeEndpoint(m_path);
+    if (probe == EndpointProbe::Hyprnotes) return Result::AlreadyRunning;
+    if (probe == EndpointProbe::Unconfirmed)
+      return fail(QStringLiteral("endpoint is active but did not confirm the Hyprnotes protocol"));
+    // A refused connection means stale (crashed instance). Remove only while
+    // holding the endpoint lock; a connected but unrecognized peer is preserved.
     QLocalServer::removeServer(m_path);
   }
   if (!m_server.listen(m_path)) return fail(m_server.errorString());
@@ -101,14 +191,13 @@ void InstanceServer::onConnection() {
       }
       s->setProperty("done", true);
       if (nl > kMaxLine) return finish("HNIPC 1 err too-large\n");
-      const QList<QByteArray> parts = buf->left(nl).trimmed().split(' ');
-      if (parts.size() != 3 || parts[0] != "HNIPC") return finish({}); // garbage: drop silently
-      bool ok = false;
-      const int ver = parts[1].toInt(&ok);
-      if (!ok) return finish({});
-      if (ver != kProtocolVersion) return finish("HNIPC 1 err incompatible-version\n");
       Action a;
-      if (!parseAction(parts[2], &a)) return finish("HNIPC 1 err unknown-command\n");
+      QString decodeError;
+      if (!decodeInstanceRequest(buf->left(nl), &a, &decodeError)) {
+        if (decodeError == QLatin1String("malformed request") || decodeError == QLatin1String("malformed version")) return finish({});
+        if (decodeError == QLatin1String("incompatible version")) return finish("HNIPC 1 err incompatible-version\n");
+        return finish("HNIPC 1 err unknown-command\n");
+      }
       const bool handled = !m_handler || m_handler(a);
       finish(handled ? "HNIPC 1 ok\n" : "HNIPC 1 err failed\n");
     });

@@ -62,6 +62,29 @@ class ModsTest : public QObject {
     QString fix(const char *n) { return QString(HN_FIX_DIR) + "/lib" + n + ".so"; }
 
 private slots:
+    void missingManifestIsReported() {
+        QVERIFY(QDir().mkpath(modsDir() + "/missing"));
+        QList<ModError> errors;
+        QVERIFY(scanManifests(modsDir(), &errors).isEmpty());
+        QCOMPARE(errors.size(), 1);
+        QCOMPARE(errors.first().modId, QString("missing"));
+        QCOMPARE(errors.first().message, QString("mod.json not readable"));
+    }
+    void oversizedManifestIsRejectedBeforeParsing() {
+        const QString dir = modsDir() + "/large";
+        QVERIFY(QDir().mkpath(dir));
+        QFile file(dir + "/mod.json");
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray manifest = QString(R"({"id":"large","name":"Large","version":"1","host_api_version":1,"arch":"%1","library":"lib.so","activation":["on-startup"]})")
+                                        .arg(QSysInfo::buildCpuArchitecture()).toUtf8();
+        QCOMPARE(file.write(manifest + QByteArray(1 << 20, ' ')), qint64(manifest.size() + (1 << 20)));
+        file.close();
+        QList<ModError> errors;
+        QVERIFY(scanManifests(modsDir(), &errors).isEmpty());
+        QCOMPARE(errors.size(), 1);
+        QCOMPARE(errors.first().modId, QString("large"));
+        QVERIFY(errors.first().message.contains("too large"));
+    }
     void truncated_library_is_rejected_not_loaded() {   // D12: used to SIGBUS inside dlopen
         const QString src = fix("mods_fixture_good");
         QFile f(src);

@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
 # Reproduce every P8 stress/load measurement. Usage:
-#   tests/stress/run_all.sh [stage ...]      stages: editor repo repo_disk index app_idle app_binary app_cycles app_orphan app_soak robust (default: all)
+#   tests/stress/run_all.sh [stage ...]      stages: editor repo repo_disk index app_idle app_binary app_cycles app_orphan app_soak robust scale chaos (default: all)
 #   QUICK=1  tests/stress/run_all.sh         smoke run (short settle/sampling, 1-minute soak) - NOT valid for reporting
 #   SOAK_MIN=20 (default 20) minutes for the soak; DISK_TMP=<dir on a real disk> for the repo_disk stage (default build dir)
 # Everything runs inside temporary directories (HN_NOTES_DIR/HN_CONFIG_DIR/HN_STATE_DIR/HN_CACHE_DIR/HN_DATA_DIR are redirected by the tests).
 # Needs a Release build:  cmake -S . -B build-p8 -G Ninja -DHN_STRESS=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build-p8
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+STAGES=("$@")
+if [ ${#STAGES[@]} -eq 0 ]; then STAGES=(editor repo repo_disk index app_idle app_binary app_cycles app_orphan app_soak robust scale chaos); fi
+for st in "${STAGES[@]}"; do
+  case $st in editor|repo|repo_disk|index|app_idle|app_binary|app_cycles|app_orphan|app_soak|robust|scale|chaos) ;;
+    *) echo "unknown stage $st" >&2; exit 2 ;;
+  esac
+done
 B="${BUILD_DIR:-$ROOT/build-p8}"
 OUT="${OUT:-$ROOT/build-p8/stress-results/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+SESSION_TMP="$(mktemp -d "${TMPDIR:-/tmp}/hyprnotes-stress.XXXXXX")"
+cleanup() { rm -rf "$SESSION_TMP"; }
+trap cleanup EXIT INT TERM
+export HOME="$SESSION_TMP/home" XDG_CONFIG_HOME="$SESSION_TMP/xdg-config" XDG_DATA_HOME="$SESSION_TMP/xdg-data"
+export XDG_STATE_HOME="$SESSION_TMP/xdg-state" XDG_CACHE_HOME="$SESSION_TMP/xdg-cache"
+export HN_CONFIG_DIR="$SESSION_TMP/config" HN_DATA_DIR="$SESSION_TMP/data" HN_STATE_DIR="$SESSION_TMP/state"
+export HN_CACHE_DIR="$SESSION_TMP/cache" HN_NOTES_DIR="$SESSION_TMP/notes"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$HN_CONFIG_DIR" "$HN_DATA_DIR" "$HN_STATE_DIR" "$HN_CACHE_DIR" "$HN_NOTES_DIR"
 export QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1
-Q=""; FAST=""; SOAK_MIN="${SOAK_MIN:-20}"
-if [ "${QUICK:-0}" = 1 ]; then Q="--quick"; FAST="--fast"; SOAK_MIN=2; fi
+Q=""; FAST=""; SOAK_MIN="${SOAK_MIN:-20}"; CHAOS_DURATION="${CHAOS_MIN:-120}"
+if [ "${QUICK:-0}" = 1 ]; then Q="--quick"; FAST="--fast"; SOAK_MIN=2; [ -n "${CHAOS_MIN:-}" ] || CHAOS_DURATION=2; fi
 DISK_TMP="${DISK_TMP:-$ROOT/build-p8/stress-disk-tmp}"
 S="$B/tests/stress"
 fails=0
@@ -28,7 +44,6 @@ run() { # name cmd...
   [ $rc -ne 0 ] && fails=$((fails+1))
 }
 want() { [ $# -eq 0 ] && return 0; for s in "${STAGES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
-STAGES=("$@"); [ ${#STAGES[@]} -eq 0 ] && STAGES=(editor repo repo_disk index app_idle app_binary app_cycles app_orphan app_soak robust)
 { echo "date: $(date -Is)"; echo "kernel: $(uname -srvm)"; echo "cpu: $(grep -m1 'model name' /proc/cpuinfo)"; echo "cores: $(nproc)  mem: $(free -m | awk '/Mem/{print $2" MiB"}')";
   echo "qt: $(pkg-config --modversion Qt6Core 2>/dev/null)  compiler: $(c++ --version | head -1)"; echo "build type: $(grep CMAKE_BUILD_TYPE: "$B/CMakeCache.txt")";
   echo "tmp fs: $(df -T "${TMPDIR:-/tmp}" | tail -1)"; echo "disk-tmp fs: $(mkdir -p "$DISK_TMP"; df -T "$DISK_TMP" | tail -1)"; } > "$OUT/environment.txt"
@@ -44,9 +59,17 @@ for st in "${STAGES[@]}"; do
     app_orphan)  run app_orphan "$S/stress_app" orphan ;;
     app_soak)    run app_soak "$S/stress_app" soak "$SOAK_MIN" $FAST ;;
     robust)      run robust "$S/stress_robust" all ;;
-    *) echo "unknown stage $st" ;;
+    scale)       run scale "$S/stress_scale" all $Q ;;
+    chaos)       run chaos "$S/stress_chaos" "$CHAOS_DURATION" $Q ;;
+    *) echo "unknown stage $st"; fails=$((fails+1)) ;;
   esac
 done
+if [ "${QUICK:-0}" != 1 ] && { want scale || want app_idle || want index || want editor; }; then
+  if ! python3 "$ROOT/tests/stress/check_budgets.py" "$ROOT/tests/stress/budgets.txt" "$OUT"; then
+    echo "budget gate failed (missing metric, malformed budget, or exceeded immutable threshold)" | tee -a "$OUT/index.txt"
+    fails=$((fails+1))
+  fi
+fi
 echo "results in $OUT (failed executables: $fails)"
 grep -h '^FAIL' "$OUT"/*.log | sed 's/^/  /' || true
 echo "known-defect (XFAIL) lines:"; grep -h '^XFAIL' "$OUT"/*.log | sed 's/^/  /' || true

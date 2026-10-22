@@ -27,6 +27,9 @@ struct HyprPaths {
   static HyprPaths inDir(const QString& dir) { return {dir + "/.socket.sock", dir + "/.socket2.sock"}; }
 };
 
+struct HyprEventLine { QString name, data; bool relevant = false, configReloaded = false; };
+bool parseHyprEventLine(const QByteArray &line, HyprEventLine *out);
+
 struct Reply {
   enum class Status { Ok, ConnectFailed, Timeout, Stale, Error } status = Status::Error;
   QByteArray data;
@@ -102,7 +105,7 @@ signals:
   void connectionChanged(bool connected);
   // After a *re*connect: window addresses are stale; re-enumerate app-owned windows.
   void reenumerateRequested(quint64 generation);
-  void event(const QString& name, const QString& data);   // every raw event
+  void rawEvent(const QString& name, const QString& data);   // every raw event
   // Coalesced (~30ms) set of relevant event names since last emission; do ONE follow-up query.
   void stateChanged(const QSet<QString>& events);
   void configReloaded();                                   // reconcile, never override rules
@@ -116,6 +119,7 @@ private:
   HyprPaths m_paths;
   QLocalSocket* m_event = nullptr;
   QByteArray m_evBuf;
+  bool m_discardingEvent = false;
   QTimer m_backoff, m_coalesce;
   int m_backoffMs = 100;
   bool m_running = false, m_connected = false, m_everConnected = false;

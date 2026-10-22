@@ -121,10 +121,18 @@ ConsentDialog::ConsentDialog(const ConsentRequest &r, QWidget *parent, int delay
     auto *wtext = wrapped(warningText(), m_warn);
     wtext->setObjectName("hnConsentWarningText");
     wtext->setStyleSheet("background: transparent; border: none; font-weight: 600;");
+    auto *warningDetails = new QScrollArea(m_warn);
+    warningDetails->setObjectName("hnConsentWarningDetails");
+    warningDetails->setAccessibleName(tr("Security warning details"));
+    warningDetails->setFocusPolicy(Qt::StrongFocus);   // keyboard users can scroll the warning when the window is small
+    warningDetails->setWidgetResizable(true);
+    warningDetails->setFrameShape(QFrame::NoFrame);
+    warningDetails->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    warningDetails->setWidget(wtext);
     warningHeading->addWidget(wi);
     warningHeading->addWidget(wh, 1);
     wl->addLayout(warningHeading);
-    wl->addWidget(wtext);
+    wl->addWidget(warningDetails);
     bl->addWidget(m_warn);
 
     m_details = new QScrollArea(body);
@@ -319,6 +327,7 @@ void ConsentDialog::restyle() {
     mono.setPixelSize(t.baseSize);
     m_hash->setFont(mono);
     m_bar->setStyleSheet(QString("QWidget#hnConsentBar { border-top: 1px solid %1; }").arg(t.border.name()));
+    if (m_layoutReady) updateBounds();   // fonts changed: the warning needs a new height
 }
 
 void ConsentDialog::showEvent(QShowEvent *e) {
@@ -349,18 +358,40 @@ void ConsentDialog::updateBounds() {
         available -= QSize(frame.left() + frame.right(), frame.top() + frame.bottom());
     }
     available = available.expandedTo(QSize(1, 1));
+    available.setHeight(qMax(1, available.height() * 9 / 10));
     setMaximumSize(available);
     const int w = qMin(width(), available.width());
     const auto margins = m_warn->parentWidget()->layout()->contentsMargins();
-    const int warningHeight = m_warn->heightForWidth(qMax(1, w - margins.left() - margins.right()));
     const int headHeight = m_head->heightForWidth(w), barHeight = m_bar->heightForWidth(w);
+    // The security warning is shown in full whenever the screen allows it. It only scrolls (keyboard-reachable)
+    // when showing it all would push the buttons and a minimal details area off the usable screen.
+    if (auto *area = m_warn->findChild<QScrollArea *>("hnConsentWarningDetails")) {
+        if (auto *text = qobject_cast<QLabel *>(area->widget())) {
+            const int line = QFontMetrics(text->font()).height();
+            const int warnWidth = qMax(1, w - margins.left() - margins.right());
+            area->setFixedHeight(line + 6);
+            m_warn->layout()->activate();
+            const int frameOverhead = m_warn->heightForWidth(warnWidth) - (line + 6);   // heading, margins, borders
+            // text width inside the scroll area: panel width minus panel margins and border
+            const int textWidth = qMax(1, warnWidth - 12 - 12 - 9 - 2);
+            const int full = text->heightForWidth(textWidth) + 4;
+            const int spacing = m_warn->parentWidget()->layout()->spacing();
+            const int detailsMin = 2 * line + 8;
+            const int nativeHeight = m_native ? m_native->heightForWidth(qMax(1, w - margins.left() - margins.right())) + spacing : 0;
+            const int room = available.height() - headHeight - barHeight - margins.top() - margins.bottom() - 2 * spacing - detailsMin - frameOverhead - nativeHeight;
+            area->setFixedHeight(qBound(3 * line + 6, full, qMax(3 * line + 6, room)));   // at least three lines, never more than the screen leaves
+            m_warn->layout()->activate();
+        }
+    }
+    const int warningHeight = m_warn->heightForWidth(qMax(1, w - margins.left() - margins.right()));
     m_warn->setMinimumHeight(warningHeight);
     m_head->setFixedHeight(headHeight);
     m_bar->setFixedHeight(barHeight);
-    m_details->setMinimumHeight(qMax(32, fontMetrics().height() + 8));
+    m_details->setMinimumHeight(32);
     const int minimum = headHeight + warningHeight + barHeight + margins.top() + margins.bottom()
         + m_warn->parentWidget()->layout()->spacing() + m_details->minimumHeight();
     setMinimumSize(qMin(520, available.width()), qMin(minimum, available.height()));
+    if (width() != w || height() > available.height()) resize(w, qMin(height(), available.height()));
 }
 
 bool ConsentDialog::run(const ConsentRequest &r, QWidget *parent) {

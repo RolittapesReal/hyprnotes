@@ -100,7 +100,7 @@ void NoteRepository::start(const QString &rel, State &st, Job job) {
     st.running = job;
     QString abs = absolutePath(rel);
     // Everything the task needs is copied: the worker never touches this object.
-    struct In { QString root, rel, abs; Job job; bool hasBase; QByteArray baseHash; RecoveryStore store; };
+    struct In { QString root, rel, abs; Job job; bool hasBase = false; QByteArray baseHash; RecoveryStore store; };
     In in{m_root, rel, abs, job, st.hasBaseline, st.baseHash, m_recovery};
     QPointer<NoteRepository> self(this);
     m_worker->post(Worker::Save, [self, in] {

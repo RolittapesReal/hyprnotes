@@ -35,15 +35,15 @@ Theme modernist(bool dark) {
     auto c = [](const char *h) { return QColor(QLatin1String(h)); };
     if (dark) {
         t.bg = c("#111111"); t.surface = c("#1A1A1A"); t.text = c("#F3F1EC"); t.muted = c("#A3A09A");
-        t.accent = c("#FF5A43"); t.accentText = c("#111111"); t.border = c("#3A3A38");
+        t.accent = c("#FF5A43"); t.accentText = c("#111111"); t.border = c("#686660");
         t.danger = c("#FF7A6B"); t.success = c("#5FBF7A"); t.selection = c("#262624");
-        const char *n[6] = {"#E5533D", "#4F7FD9", "#E8B923", "#4FA36A", "#3A3A38", "#D8D5CC"};
+        const char *n[6] = {"#E5533D", "#4F7FD9", "#E8B923", "#4FA36A", "#686660", "#D8D5CC"};
         for (int i = 0; i < 6; ++i) t.noteAccent[i] = c(n[i]);
     } else {
         t.bg = c("#F3F1EC"); t.surface = c("#FBFAF7"); t.text = c("#111111"); t.muted = c("#5C5A55");
-        t.accent = c("#D92E18"); t.accentText = c("#FFFFFF"); t.border = c("#C9C5BB");
+        t.accent = c("#D92E18"); t.accentText = c("#FFFFFF"); t.border = c("#8C8980");
         t.danger = c("#B3261E"); t.success = c("#1E7A3C"); t.selection = c("#E6E2D8");
-        const char *n[6] = {"#D92E18", "#1F4FB5", "#F2B705", "#2E8B57", "#111111", "#FFFFFF"};
+        const char *n[6] = {"#D92E18", "#1F4FB5", "#996F00", "#2E8B57", "#111111", "#777777"};
         for (int i = 0; i < 6; ++i) t.noteAccent[i] = c(n[i]);
     }
     t.padding = 16;   // 8px grid; header text in the organizer aligns with the editor text edge

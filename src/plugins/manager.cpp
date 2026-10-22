@@ -83,7 +83,15 @@ void PluginManager::saveCache() {
     if (cacheSuspended_) return;
     QJsonObject c;
     for (auto it = entries_.begin(); it != entries_.end(); ++it)
+    {
         if (const auto *r = registry_.of(it.key())) c[it.key()] = QJsonObject{{"hash", it->hash}, {"regs", r->toJson()}};
+        else if (const auto disabled = registry_.disabledSettings(it.key()); !disabled.isEmpty()) {
+            // Disabled plugin: keep only its settings so they survive the next rescan/restart.
+            PluginRegs only;
+            only.settings = disabled;
+            c[it.key()] = QJsonObject{{"hash", it->hash}, {"regs", only.toJson()}};
+        }
+    }
     if (c == cache_) return;
     cache_ = c;
     QDir().mkpath(cfg_.stateDir);
@@ -178,15 +186,30 @@ void PluginManager::loadEntry(const QString &dir, const QString &name) {
         e.lastError = QStringLiteral("files changed since you approved this plugin");
     }
     entries_[name] = e;
-    if (trust_.record(name).enabled) activateEntry(name, entries_[name]);
+    const auto rec = trust_.record(name);
+    if (rec.enabled) {
+        activateEntry(name, entries_[name]);
+        deliverAppStarted(name, entries_[name]);
+    }
+    else if (!trust_.verifyHash(name, e.hash)) {
+        const auto cached = cache_.value(name).toObject();
+        if (cached.value(QLatin1String("hash")).toString() == e.hash) {
+            const auto regs = PluginRegs::fromJson(name, cached.value(QLatin1String("regs")).toObject());
+            host_->setPlugin(e.m, rec.permissions, &regs);
+            registry_.setDisabledSettings(name, regs.settings);
+        }
+    }
 }
 
-void PluginManager::scan() {
+bool PluginManager::scan() {
     for (auto it = generations_.cbegin(); it != generations_.cend(); ++it)
         if (host_->isBusy(it.key())) {
             audit_.log(QStringLiteral("busy"), it.key(), QStringLiteral("scan refused during callback dispatch"));
-            return;
+            return false;
         }
+    // Another process (the --install-plugin CLI) may have written consent since this manager was built.
+    const bool trustReadable = trust_.reload();
+    if (!trustReadable) audit_.log(QStringLiteral("trust"), QString(), QStringLiteral("trust store unreadable on rescan; keeping the records already in memory"));
     cacheSuspended_ = true;
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
         invalidatePanels(it.key());
@@ -202,6 +225,7 @@ void PluginManager::scan() {
     cacheSuspended_ = false;
     saveCache();
     emit pluginsChanged();
+    return trustReadable;   // false: rescanned with the consent already in memory; the caller must not report a clean refresh
 }
 
 PluginInfo PluginManager::info(const QString &id) const {
@@ -299,8 +323,27 @@ bool PluginManager::enable(const QString &id, QString *err) {
     activateEntry(id, *it);
     if (!it->lastError.isEmpty()) { const QString m = it->lastError; emit pluginsChanged(); return fail(m); }
     audit_.log(QStringLiteral("enable"), id);
+    deliverAppStarted(id, *it);
     emit pluginsChanged();
     return true;
+}
+
+void PluginManager::deliverAppStarted(const QString &id, const Entry &entry) {
+    if (!appStarted_ || startedPlugins_.contains(id)) return;
+    startedPlugins_.insert(id);
+    if (entry.m.tier == Tier::Native) native_->postEvent(id, QStringLiteral("app.started"), cfg_.appVersion);
+    else if (registry_.subscribers(QStringLiteral("app.started")).contains(id))
+        host_->deliver(id, QStringLiteral("app.started"), cfg_.appVersion, nullptr);
+}
+
+void PluginManager::appStarted() {
+    if (appStarted_) return;
+    appStarted_ = true;
+    const auto recipients = registry_.subscribers(QStringLiteral("app.started"));
+    for (const auto &id : recipients) startedPlugins_.insert(id);
+    for (auto it = entries_.cbegin(); it != entries_.cend(); ++it)
+        if (it->m.tier == Tier::Native && trust_.record(it.key()).enabled) startedPlugins_.insert(it.key());
+    post(QStringLiteral("app.started"), cfg_.appVersion, nullptr);
 }
 
 bool PluginManager::disable(const QString &id) {
@@ -308,8 +351,11 @@ bool PluginManager::disable(const QString &id) {
     if (it == entries_.end()) return false;
     trust_.setEnabled(id, false);
     invalidatePanels(id);
-    host_->forget(id);
+    const auto *regs = registry_.of(id);
+    const QList<SettingReg> settings = regs ? regs->settings : QList<SettingReg>();
+    host_->unload(id);
     registry_.remove(id);
+    registry_.setDisabledSettings(id, settings);
     if (it->m.tier == Tier::Native) native_->deactivate(id);
     audit_.log(QStringLiteral("disable"), id);
     emit pluginsChanged();
@@ -319,6 +365,7 @@ bool PluginManager::disable(const QString &id) {
 bool PluginManager::remove(const QString &id, QString *err) {
     disable(id);
     host_->forget(id);
+    registry_.remove(id);
     host_->deleteStorage(id);
     PackageInstaller inst(cfg_.pluginsDir, &trust_, &audit_, cfg_.appVersion);
     if (!inst.uninstall(id, err)) return false;

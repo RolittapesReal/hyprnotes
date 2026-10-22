@@ -236,7 +236,7 @@ private slots:
         QMimeData dm;
         dm.setText(QStringLiteral("DROP"));
         const QPoint at = f.v->cursorRect(QTextCursor(f.v->document())).center();
-        QDragEnterEvent en(at, Qt::CopyAction, &dm, Qt::LeftButton, Qt::NoModifier);
+        QDragEnterEvent en(QPointF(at), Qt::CopyAction, &dm, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(f.v->viewport(), &en);
         QDropEvent de(QPointF(at), Qt::CopyAction, &dm, Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(f.v->viewport(), &de);
@@ -259,6 +259,27 @@ private slots:
         f.ed.pasteAsMarkdown();
         QCOMPARE(spy.count(), 1);
         QVERIFY(f.plain().contains(QStringLiteral("| a | b |")));
+    }
+    void markdownPasteIntoExistingDocumentPreservesChunkedListProvenance()
+    {
+        const QString prefix = QStringLiteral("existing text\n\n");
+        QString pasted;
+        for (int i = 0; i < 520; ++i)
+            pasted += QStringLiteral("%1. entry%2\n").arg(i + 40).arg(i);
+        pasted += QStringLiteral("\n- parent\n  - child\n\n5. separate\n6. list\n");
+
+        Fx f(prefix.toUtf8());
+        f.moveEnd();
+        QApplication::clipboard()->setText(pasted);
+        f.ed.pasteAsMarkdown();
+
+        const QString expected = prefix + pasted;
+        const QString out = f.md();
+        QVERIFY2(sameSemantics(expected, out), qPrintable(expected + QStringLiteral("\n--- exported ---\n") + out));
+        QVERIFY(out.startsWith(prefix));
+        QVERIFY(out.contains(QStringLiteral("559. entry519\n")));
+        QVERIFY(out.contains(QStringLiteral("\n  - child\n")));
+        QVERIFY(out.contains(QStringLiteral("\n5. separate\n6. list\n")));
     }
     void checkboxMouseKeyboardUndo()
     {

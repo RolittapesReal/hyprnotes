@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -55,13 +56,6 @@ namespace {
 class LinkUpdateDialog : public QDialog {
 public:
     using QDialog::QDialog;
-protected:
-    bool event(QEvent *event) override {
-        const bool handled = QDialog::event(event);
-        if (layout() && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize))
-            setMinimumHeight(layout()->totalHeightForWidth(width()));
-        return handled;
-    }
 };
 }
 
@@ -84,7 +78,12 @@ LinkChoice askLinkUpdate(QWidget *parent, const QString &summary, const QStringL
     title->setWordWrap(true);
     hl->addWidget(title);
     root->addWidget(head);
-    auto *body = new QWidget(&d);
+    auto *bodyScroll = new QScrollArea(&d);
+    bodyScroll->setAccessibleName(QObject::tr("Rename impact details"));
+    bodyScroll->setWidgetResizable(true);
+    bodyScroll->setFrameShape(QFrame::NoFrame);
+    bodyScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *body = new QWidget;
     auto *bl = new QVBoxLayout(body);
     bl->setContentsMargins(20, 16, 20, 8);
     bl->setSpacing(8);
@@ -107,7 +106,8 @@ LinkChoice askLinkUpdate(QWidget *parent, const QString &summary, const QStringL
     restyle();
     QObject::connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, &d, restyle);
     bl->addWidget(list);
-    root->addWidget(body, 1);
+    bodyScroll->setWidget(body);
+    root->addWidget(bodyScroll, 1);
     auto *bar = new QWidget(&d);
     auto *bh = new QVBoxLayout(bar);
     bh->setContentsMargins(20, 8, 20, 16);
@@ -116,7 +116,8 @@ LinkChoice askLinkUpdate(QWidget *parent, const QString &summary, const QStringL
     auto *only = new ui::WrappingButton(QObject::tr("Rename only"), bar);
     auto *update = new ui::WrappingButton(QObject::tr("Update links"), bar);
     for (auto *b : {cancel, only, update}) b->setMinimumHeight(36);
-    update->setDefault(true);
+    cancel->setDefault(true);
+    update->setAutoDefault(false);
     update->setProperty("hnRole", "primary");
     actions->addButton(cancel);
     actions->addButton(only);

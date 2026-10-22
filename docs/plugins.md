@@ -1,16 +1,16 @@
 # Writing Hyprnotes plugins
 
-Plugins let you change how Hyprnotes works: add commands, expand text as you type, react to saving a note, tidy text on save, talk to a web service. Most plugins are one small Lua file.
+Plugins add behavior to Hyprnotes. A plugin can add a command, replace a typing shortcut, respond to note events, or call a web service. Most script plugins fit in one Lua file.
 
 > **Third-party plugins are not reviewed by the Hyprnotes project. A plugin can read or change your notes and, depending on its permissions, send data over the network. Only install plugins from sources you trust.**
 >
 > For native plugins the app adds: **This plugin runs native code with full access to your user account. It is not sandboxed.**
 
-That warning is shown, always visible, in the dialog where you approve a plugin. Read [the security model](#security-model-and-its-limits) before you publish or install anything.
+The approval dialog keeps that warning visible. Before publishing or installing a plugin, read [the security model](#security-model-and-its-limits).
 
-Companion documents: [plugin-api.md](plugin-api.md) (every `hn.*` function), [examples/plugins](../examples/plugins) (ten complete plugins).
+The [API reference](plugin-api.md) lists every `hn.*` function. [Examples](../examples/plugins) contains ten complete plugins.
 
-**Official plugins.** Hyprnotes also maintains four plugins of its own, in the separate `hyprnotes-plugins` repository (next to this one): Slash Menu, Journal and Templates, Tasks and Saved Queries, and Wiki Links. They use the same API and permissions as yours, so they double as larger examples. They are not bundled with the app; the plugin marketplace will carry them.
+Hyprnotes maintains four plugins in the adjacent `hyprnotes-plugins` repository: Slash Menu, Journal and Templates, Tasks and Saved Queries, and Wiki Links. They use this API and permission model. They are not bundled with the app; the plugin marketplace will carry them.
 
 ## Two kinds of plugin
 
@@ -21,11 +21,11 @@ Companion documents: [plugin-api.md](plugin-api.md) (every `hn.*` function), [ex
 | Needs approval | yes | yes, with the extra native warning |
 | Hot reload | yes | restart |
 
-Everything below is about script plugins.
+This guide covers script plugins.
 
 ## Quickstart: your first plugin in 5 minutes
 
-The command-line steps below need the `hyprnotes` binary with the plugin authoring flags (the same functions are in the `hn_plugins` library: `createTemplate`, `checkDirectory`, `packDirectory`).
+These steps use the `hyprnotes` binary with plugin-authoring flags. The same operations are available in the `hn_plugins` library as `createTemplate`, `checkDirectory`, and `packDirectory`.
 
 1. **Scaffold** a working plugin:
 
@@ -58,11 +58,13 @@ The command-line steps below need the `hyprnotes` binary with the plugin authori
    hyprnotes --check-plugin ~/shout
    ```
 
-   It validates the manifest, file sizes, UTF-8, Lua syntax and prints warnings for dangerous permissions. Exit code 0 means installable.
+   This checks the manifest, size limits, UTF-8, and Lua syntax, then reports dangerous permissions. Exit code 0 means the package passed these checks.
 
-4. **Install it**: open **Plugins** in Hyprnotes, choose *Install from folder* and pick `~/shout`. A new plugin is **disabled until you approve it**. The approval dialog shows the author, the folder, a SHA-256 of the files, every permission in plain language (dangerous ones highlighted) and the warning above. Approve, and the command *Shout selection* appears in the command palette.
+4. **Install it**: in Hyprnotes, open **Plugins**, choose *Install from folder*, and select `~/shout`. The plugin stays **disabled until you approve it**. The dialog shows the author, folder, a SHA-256 digest, each permission in plain language, and the warning above. After approval, *Shout selection* appears in the command palette.
 
-5. **Edit and reload**. Change the file, press **Reload** on the plugin's card, run the command again. No app restart. Approval is tied to the exact files: after an edit, the plugin keeps running only if the reload is a developer reload and your `permissions` list did not grow beyond what was approved; otherwise it waits for you to approve it again.
+For a terminal install, `hyprnotes --install-plugin PATH` prints permission and trust details, then asks you to type the plugin id. Any other input cancels and removes that package. `--yes-i-trust-this-plugin` skips the prompt; use it only after reviewing the files and permissions. An open app refreshes its Plugins page if it acknowledges the request. Otherwise, the installed plugin appears after restart.
+
+5. **Edit and reload**. Change a file, choose **Reload** on the plugin card, then run the command again; you do not need to restart Hyprnotes. Approval covers the exact files. A developer reload can keep the plugin running when its `permissions` list has not grown beyond the approved list. Other changes require approval again.
 
 6. **Share it**:
 
@@ -70,7 +72,7 @@ The command-line steps below need the `hyprnotes` binary with the plugin authori
    hyprnotes --pack-plugin ~/shout      # writes a .hnplugin archive
    ```
 
-Try the finished examples in `examples/plugins/` (`word-count`, `insert-date`, `sort-lines`, `markdown-toc`, `title-case-selection`, `daily-note`, `snippets`, and the API-2 examples `backlinks-panel`, `link-completion`, `open-tasks`): each is a folder with `plugin.json`, `main.lua` and a README, and each is installed and run by the test-suite.
+The folders in `examples/plugins/` include `word-count`, `insert-date`, `sort-lines`, `markdown-toc`, `title-case-selection`, `daily-note`, `snippets`, and the API-2 examples `backlinks-panel`, `link-completion`, and `open-tasks`. Each has a `plugin.json`, `main.lua`, and README; the test suite installs and runs them.
 
 ## Anatomy of a plugin
 
@@ -154,9 +156,9 @@ Ask only for what you use. Each call to a protected function checks that the use
 | `editor.complete` | Offer completion suggestions while you type | low | no |
 | `editor.links` | Handle clicks on [[links]] in your notes | medium | no |
 
-The last four need `"api": 2`. `notes.index` is read-only but covers every note's links, tags, frontmatter and tasks, so with `network` it can leak the shape of your whole library; `editor.links` lets a plugin decide what happens when you click a `[[link]]`.
+The last four permissions require `"api": 2`. `notes.index` can read links, tags, frontmatter, and tasks across the library. Combined with `network`, it can expose the library's structure. `editor.links` lets a plugin handle clicks on `[[links]]`.
 
-Combinations matter more than single permissions: `note.read` + `network` lets a plugin send your note text to the hosts it lists; `notes.read` + `network` can send your whole library. `notes.write` and `note.edit` can destroy text (undo exists, but it is not a backup). Plugins that need no permission at all (typing triggers, commands that only call `hn.time`) are the easiest to trust.
+Permissions can combine. `note.read` with `network` lets a plugin send note text to its listed hosts; `notes.read` with `network` can send the whole library. `notes.write` and `note.edit` can destroy text. Undo is not a backup. A plugin that needs no permissions, such as a typing trigger or a command that only calls `hn.time`, has less access to assess.
 
 ## Events
 
@@ -196,7 +198,7 @@ hn.trigger{ pattern = "::sig", replace = function() return "Best regards,\nYour 
 
 ## Settings
 
-Declare settings with `hn.setting{ id, type, default, title }`; the app renders them on your plugin's card and stores the choice. Read them with `hn.settings.get(id)` every time you need them (the value can change between calls).
+Declare settings with `hn.setting{ id, type, default, title }`; the app renders them on your plugin's card and stores the choice, even while the plugin is disabled. Read them with `hn.settings.get(id)` when a callback runs; it returns current choice, so callback behavior can respond to edits without Reload.
 
 ```lua test perms=ui
 hn.setting{ id = "name", type = "string", default = "friend", title = "Who to greet" }
@@ -207,7 +209,7 @@ hn.command{ id = "greet", title = "Greet", run = function()
 end }
 ```
 
-Things that are decided when the plugin **loads** (such as which triggers exist) do not change when the user edits a setting; tell them to press Reload (the `snippets` example does this).
+The set of registrations made at load time (for example, whether a trigger exists at all) does not rebuild when a setting changes. If a setting controls registration itself, ask the user to Reload; if it controls what a registered callback does, read it with `hn.settings.get` so change takes effect live.
 
 Plugin-private data that is not a setting goes through `hn.storage` (permission `storage`, 1 MiB).
 
@@ -263,6 +265,8 @@ Things worth knowing:
 
 Full reference: [plugin-api.md](plugin-api.md#the-note-index-hnnotes-api-2), [panels](plugin-api.md#panels-api-2) and [editor hooks](plugin-api.md#editor-hooks-api-2).
 
+The reference includes twelve behavior notes alongside the signatures. They cover startup delivery, cancellation, index failures and freshness, settings, UI details, and CLI refresh behavior.
+
 ## Budgets and limits you will notice
 
 | What | Limit |
@@ -283,7 +287,7 @@ Full reference: [plugin-api.md](plugin-api.md#the-note-index-hnnotes-api-2), [pa
 | Notes opened (API 2) | 5 per callback |
 | Three failures in a row | the plugin is switched off and you are told |
 
-A callback that overruns its budget is stopped, counts as a failure and its error goes to the log. Time spent waiting for the user in a dialog or for the network does not count.
+A callback that exceeds its budget is stopped and logged as a failure. Time spent waiting for a dialog response or network reply is excluded from the callback budget.
 
 ## Debugging
 
@@ -316,7 +320,7 @@ Installing from Browse works like the Manual path. The package is downloaded, ch
 
 Updates are manual. Browse marks an entry as "Update available", and applying it always shows the consent dialog again. Native plugins are listed with a warning chip but cannot be installed from Browse until releases are signed; the Manual file and folder install is unchanged.
 
-The registry checks a SHA-256 hash, which only proves that the download matches the index. It does not prove that the plugin is trustworthy, and the registry is not a security audit. Read the permissions before you accept.
+The SHA-256 check confirms that a download matches the registry index. It says nothing about whether the plugin is trustworthy, and the registry does not audit plugin code. Review the permissions before accepting.
 
 ## Packing and sharing
 
@@ -348,4 +352,4 @@ What it does **not** do, stated plainly:
 - Resource limits protect the app, not other programs: there is no CPU priority or network quota beyond the caps above.
 - The audit log is local and plain text. It helps you see what happened; it is not tamper-proof.
 
-If in doubt: read `main.lua`. It is a few hundred lines at most.
+If you are unsure about a plugin, read its `main.lua` before approving it.

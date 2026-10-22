@@ -2,11 +2,11 @@
 
 ## Themes
 
-Built-ins, in picker order: `modernist` (light and dark), `catppuccin-mocha`, `tokyo-night`, `dracula`, `nord`,
-`gruvbox-dark`, and `one-dark`. The six named presets provide dark colors; explicitly selecting Light uses all Modernist light tokens.
-Picking a bundled dark preset in Settings switches the color scheme to Dark when the UI is currently light; importing a theme never changes the scheme. Built-ins are compiled into the app and need no configuration files.
-Custom themes live at `$XDG_CONFIG_HOME/hyprnotes/themes/<name>.json`
-(default `~/.config/hyprnotes/themes/`). Select one with `"theme": "<name>"` in `config.json`.
+The picker lists `modernist` (light and dark), `catppuccin-mocha`, `tokyo-night`, `dracula`, `nord`,
+`gruvbox-dark` and `one-dark`, in that order. The six named presets define dark colors. Selecting Light uses the Modernist light tokens.
+If the UI is in Light mode, choosing a bundled dark preset in Settings switches the color scheme to Dark. Importing a theme does not change the scheme. Built-ins are compiled into the app and need no configuration files.
+Custom themes are stored at `$XDG_CONFIG_HOME/hyprnotes/themes/<name>.json`
+(default `~/.config/hyprnotes/themes/`). Set `"theme": "<name>"` in `config.json` to select one.
 A sample is at `packaging/share/themes/modernist-example.json`.
 
 ```json
@@ -14,29 +14,20 @@ A sample is at `packaging/share/themes/modernist-example.json`.
 ```
 
 - `version` must be `1`. `base` is optional and must be `modernist`.
-- `light` / `dark` hold tokens; any omitted token is inherited from the base.
-- An invalid file (bad JSON, wrong version, bad color, out-of-range number, unknown base) is rejected as a whole:
-  `loadTheme` returns the built-in base and `hn::theme::lastThemeError()` describes why. Unknown keys are ignored.
+- `light` and `dark` hold tokens. Omitted tokens inherit from the base.
+- An invalid file (malformed JSON, wrong version, invalid color, out-of-range number or unknown base) is rejected as a whole. `loadTheme` returns the built-in base, and `hn::theme::lastThemeError()` reports the reason. Unknown keys are ignored.
 
 ### Import and export
 
-Settings > Appearance > Theme: pick a theme (applies live and is saved), **Import theme...**, **Export current theme...**, **Remove**
-(user themes only; built-ins cannot be removed). Dropping a `.json`/`.yaml`/`.yml` file on the Settings dialog or the organizer
-(outside the text editor) imports and selects it. CLI: `hyprnotes --import-theme FILE` imports the file and, when `config.json`
-exists, selects it; a running instance applies it live through its config watcher. The result is printed; exit code 1 on failure.
+In Settings > Appearance > Theme, choose a theme to apply and save it, or use **Import theme...**, **Export current theme...** or **Remove**. Remove is available for user themes only. Drop a `.json`, `.yaml` or `.yml` file on the Settings dialog or on the organizer outside the text editor to import and select it. From the command line, `hyprnotes --import-theme FILE` imports the file and selects it if `config.json` exists. A running instance applies the change through its config watcher. The command prints the result and exits with code 1 on failure.
 
-Accepted files: at most 64 KiB; (1) a Hyprnotes theme (`"version": 1`, optional `"name"`), (2) base16 YAML (all of `base00`-`base0F`),
-(3) a VS Code color theme JSON (needs `editor.background` and `editor.foreground`; comments in the JSON are not supported).
-Foreign themes become a Hyprnotes theme whose single section (`dark` or `light`) is chosen by the luminance of `base00` /
-`editor.background`; the other scheme inherits modernist. base16 mapping: bg=00, surface=01, selection=02, border=03, muted=04, text=05,
+Accepted files are at most 64 KiB and use one of these formats: a Hyprnotes theme (`"version": 1`, optional `"name"`); base16 YAML with all values from `base00` through `base0F`; or a VS Code color theme JSON with `editor.background` and `editor.foreground`. Comments are not supported in JSON.
+Imported base16 and VS Code themes become Hyprnotes themes with one section, `dark` or `light`, chosen from the luminance of `base00` or `editor.background`. The other scheme inherits Modernist. base16 mapping: bg=00, surface=01, selection=02, border=03, muted=04, text=05,
 danger=08, success=0B, accent=0D, noteAccent=08,0D,0A,0B,03,07. VS Code: bg/text, `editor.selectionBackground`, `sideBar.background`,
 `panel.border`, `editorLineNumber.foreground`, `errorForeground`, accent from `focusBorder` or `button.background`.
 
-Rules: the installed name is the `name` field (or file name) reduced to `[A-Za-z0-9._-]`, max 48; names with `/`, `\` or `..` are rejected;
-all seven built-in IDs are reserved, case-insensitively. Files using those IDs are hidden from the picker and cannot override a built-in;
-they are left on disk. An identical theme is reused; a different theme with an existing name is installed as `name-2`, `name-3`, ...
-(never overwritten). A text/bg contrast below 4.5:1 is imported with a warning. Export writes a user theme unchanged, or exports a built-in
-as `<canonical-id>-copy` (for example, `nord-copy`). Import that copy to edit or remove it normally; dark-only copies retain Modernist light inheritance.
+The installed name comes from the `name` field or file name and is reduced to `[A-Za-z0-9._-]`, with a 48-character limit. Names containing `/`, `\` or `..` are rejected;
+all seven built-in IDs are reserved, case-insensitively. Files with those IDs stay on disk but are hidden from the picker and cannot override a built-in. An identical theme is reused. If a different theme already uses that name, the new one is saved as `name-2`, `name-3` and so on; existing themes are never overwritten. A text/background contrast ratio below 4.5:1 produces a warning during import. Export writes a user theme unchanged. A built-in is exported as `<canonical-id>-copy` (for example, `nord-copy`). Import that copy to edit or remove it; a dark-only copy keeps its Modernist light inheritance.
 
 ### Tokens
 
@@ -59,17 +50,16 @@ as `<canonical-id>-copy` (for example, `nord-copy`). Import that copy to edit or
 | radius | int px 0..32 | 4 |
 | borderWidth | int px 0..4 | 1 |
 
-Modernist contrast (WCAG, checked by `theme_test`): text/bg, muted/bg, accentText/accent all >= 4.5:1 in both schemes.
+Modernist contrast meets WCAG 4.5:1 for text/bg, muted/bg and accentText/accent in both schemes, as checked by `theme_test`.
 The light accent is #D92E18, slightly darker than #E5341D, because white on #E5341D is only 4.34:1.
 
-The look is flat: no gradients, shadows or blur; 8px grid; 2px accent focus rings; selected rows show a 3px accent bar at left.
-Built-ins use 4px control corners and 6px popup corners. Custom popup radius is control radius + 2px, capped at 32px;
-an explicit `radius: 0` keeps both square. Document surfaces and structural panes remain square.
+The interface uses no gradients, shadows or blur. It follows an 8px grid, uses 2px accent focus rings, and marks selected rows with a 3px accent bar on the left.
+Built-in controls have 4px corners and popups have 6px corners. For custom themes, popup radius is the control radius plus 2px, capped at 32px. Setting `radius: 0` keeps both square. Document surfaces and structural panes are always square.
 QSS cannot do letter-spacing or uppercase, so use `hn::theme::labelFont(theme)` for tracked uppercase labels.
 
 ## config.json
 
-`$XDG_CONFIG_HOME/hyprnotes/config.json`, never written at load, only by `Config::save()` (atomic).
+`config.json` is stored at `$XDG_CONFIG_HOME/hyprnotes/config.json`. Loading it does not write the file; `Config::save()` writes it atomically.
 
 ```json
 {
@@ -95,10 +85,9 @@ QSS cannot do letter-spacing or uppercase, so use `hn::theme::labelFont(theme)` 
 | toolbar | unique, non-empty action ids, in order |
 | windows.* | `[w,h]` integers (sticky >= 100, organizer >= 200) |
 
-Bad file (malformed JSON, wrong `version`): all previous settings kept, `Config::lastError()` set.
-Bad field: that field keeps its previous value, other fields apply, `lastError()` lists the problems.
-`Config::watch()` watches the config directory (and nearest existing ancestor if it is missing), coalesces events (50 ms),
-re-arms after atomic replaces and emits `changed()` only when settings or the error state actually changed.
+If the file is malformed or has the wrong `version`, all previous settings are kept and `Config::lastError()` is set.
+If a field is invalid, that field keeps its previous value while valid fields are applied. `lastError()` lists the problems.
+`Config::watch()` watches the config directory, or its nearest existing ancestor if the directory is missing. It coalesces events for 50 ms, re-arms after atomic replacements, and emits `changed()` only when settings or error state changes.
 
 ## AnimationPolicy
 

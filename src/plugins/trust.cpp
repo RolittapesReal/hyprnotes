@@ -11,13 +11,22 @@ namespace hn::plugins {
 
 TrustStore::TrustStore(QString path) : path_(std::move(path)) {}
 
+bool TrustStore::reload() {
+    // Keep the in-memory records if the file cannot be read now: a failed rescan must not make the next save wipe every other consent.
+    const auto previous = recs_;
+    if (load()) return true;
+    recs_ = previous;
+    return false;
+}
+
 bool TrustStore::load() {
     recs_.clear();
+    fileState_ = FileState::Ok;
     QFile f(path_);
     if (!f.exists()) return true;
-    if (!f.open(QIODevice::ReadOnly)) return false;
+    if (!f.open(QIODevice::ReadOnly)) { fileState_ = FileState::Unreadable; return false; }
     const auto doc = QJsonDocument::fromJson(f.read(16 * 1024 * 1024));
-    if (!doc.isObject()) return false;
+    if (!doc.isObject() || !doc.object().value(QLatin1String("plugins")).isObject()) { fileState_ = FileState::Corrupt; return false; }
     const auto ps = doc.object().value(QLatin1String("plugins")).toObject();
     for (auto it = ps.begin(); it != ps.end(); ++it) {
         const auto o = it->toObject();
@@ -35,6 +44,12 @@ bool TrustStore::load() {
 }
 
 bool TrustStore::save() {
+    if (fileState_ == FileState::Unreadable) return false;   // do not replace a file we could not read with what we remember
+    if (fileState_ == FileState::Corrupt) {
+        QFile::remove(path_ + QStringLiteral(".corrupt"));
+        if (!QFile::copy(path_, path_ + QStringLiteral(".corrupt"))) return false;   // keep the old bytes before replacing them
+        fileState_ = FileState::Ok;
+    }
     QJsonObject ps;
     for (auto it = recs_.begin(); it != recs_.end(); ++it) {
         const auto &r = it.value();

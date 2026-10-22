@@ -304,7 +304,6 @@ static void historyEviction() {
     e.ed.history().setClock([&] { return fake += 5000; });   // every keystroke is >1s after the previous one: never merged
     e.caretTo(0);
     Rng rng(88);
-    Mem base = mem();
     int maxCount = 0; qint64 maxBytes = 0;
     QList<double> pss;
     Dist keyd;

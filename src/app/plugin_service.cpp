@@ -127,7 +127,7 @@ void PluginService::create() {
         m_c->announce(tr("Plugin %1 was disabled: %2").arg(nameOf(id), why));
     });
     for (const QString &rel : m_c->openNotes()) if (auto *s = m_c->session(rel)) attach(s);
-    m_started = true;
+    if (m_appStarted) m_mgr->appStarted();
     emit changed();
 }
 
@@ -136,10 +136,13 @@ PluginManager *PluginService::manager() {
     return m_mgr.get();
 }
 
+bool PluginService::refresh() { return manager()->scan(); }
+
 void PluginService::startIfNeeded() {
-    if (m_mgr || !somethingEnabledOnDisk()) return;
+    m_appStarted = true;
+    if (m_mgr) { m_mgr->appStarted(); return; }
+    if (!somethingEnabledOnDisk()) return;
     create();
-    m_mgr->post(QStringLiteral("app.started"), QString(), nullptr);
 }
 
 QString PluginService::nameOf(const QString &id) const { return m_names.value(id, id); }
@@ -410,8 +413,15 @@ InstallResult PluginService::install(const QString &source, QWidget *parent, QSt
     InstallResult r = m->install(source, opts.upgrade);
     if (!r.ok && r.errors.size() == 1 && r.errors.first().message.contains(QStringLiteral("already installed"))) {
         const QString q = tr("A plugin with this id is already installed. Replace it with this version? The new files must be approved again unless they are identical.");
-        const bool yes = m_hooks.confirm ? m_hooks.confirm(r.id, q)
-                                         : QMessageBox::question(parent, tr("Replace plugin?"), q) == QMessageBox::Yes;
+        bool yes = false;
+        if (m_hooks.confirm) yes = m_hooks.confirm(r.id, q);
+        else {
+            QMessageBox box(QMessageBox::Question, tr("Replace plugin?"), q,
+                            QMessageBox::Yes | QMessageBox::No, parent);
+            box.setDefaultButton(QMessageBox::No);
+            box.setEscapeButton(box.button(QMessageBox::No));
+            yes = box.exec() == QMessageBox::Yes;
+        }
         if (yes) r = m->install(source, true);
     }
     if (!r.ok) {

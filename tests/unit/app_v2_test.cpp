@@ -328,8 +328,12 @@ private slots:
         QCOMPARE(np, QString("Omega.md"));
         QVERIFY(r.l.read("Beta.md").contains("[[Omega]]"));
         r.choice = LinkChoice::Cancel;
-        QCOMPARE(lib.rename("Omega.md", "Zeta", true, &np), BridgeStatus::Invalid);
+        QCOMPARE(lib.rename("Omega.md", "Zeta", true, &np), BridgeStatus::Cancelled);
         QVERIFY(QFile::exists(r.l.notes + "/Omega.md"));
+        // a real failure (target exists) is Invalid, never Cancelled, even with update_links and no user choice made
+        const int dialogsBefore = r.dialogs;
+        QCOMPARE(lib.rename("Omega.md", "Beta", true, &np), BridgeStatus::Invalid);
+        QCOMPARE(r.dialogs, dialogsBefore);
         QCOMPARE(lib.rename("Omega.md", "a/b", false, &np), BridgeStatus::Invalid);
         QCOMPARE(lib.rename("Nope.md", "x", false, &np), BridgeStatus::NotFound);
     }
@@ -598,6 +602,7 @@ private slots:
         s->editor()->visualEdit()->setTextCursor(cur);
         typeText(s, "[[Note 12");
         QTRY_VERIFY_WITH_TIMEOUT(s->editor()->completionActive(), 8000);
+        QVERIFY2(s->editor()->acceptCompletion(0), "link-completion should return a usable item for a 1,000-note library");
         auto *hub = c.plugins().hub();
         c.organizer()->dock()->setCurrentPanel("open-tasks:tasks");
         QTRY_VERIFY_WITH_TIMEOUT(hub->find("open-tasks:tasks")->rendered, 8000);

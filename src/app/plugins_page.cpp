@@ -7,7 +7,6 @@
 #include <QDesktopServices>
 #include <QDoubleSpinBox>
 #include <QDialogButtonBox>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -162,6 +161,7 @@ PluginsPage::PluginsPage(AppController *c, QWidget *parent) : QWidget(parent), m
     layout->setContentsMargins(0, 0, 0, 0);
     auto *outer = new QScrollArea(this);
     outer->setObjectName("hnPluginsScroll");
+    outer->setAccessibleName(tr("Installed plugins and marketplace"));
     outer->setWidgetResizable(true);
     outer->setFrameShape(QFrame::NoFrame);
     outer->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -213,11 +213,11 @@ PluginsPage::PluginsPage(AppController *c, QWidget *parent) : QWidget(parent), m
     install->setProperty("hnRole", "primary");
     auto *menu = new QMenu(install);
     connect(menu->addAction(tr("Plugin file (.hnplugin)…")), &QAction::triggered, this, [this] {
-        const QString p = QFileDialog::getOpenFileName(this, tr("Install plugin"), QString(), tr("Hyprnotes plugin (*.hnplugin *.zip *.tar *.tar.gz)"));
+        const QString p = ui::chooseOpenFile(this, tr("Install plugin"), QString(), tr("Hyprnotes plugin (*.hnplugin *.zip *.tar *.tar.gz)"));
         if (!p.isEmpty()) installPath(p);
     });
     connect(menu->addAction(tr("Plugin folder…")), &QAction::triggered, this, [this] {
-        const QString p = QFileDialog::getExistingDirectory(this, tr("Install plugin from folder"));
+        const QString p = ui::chooseDirectory(this, tr("Install plugin from folder"));
         if (!p.isEmpty()) installPath(p);
     });
     install->setMenu(menu);
@@ -245,6 +245,7 @@ PluginsPage::PluginsPage(AppController *c, QWidget *parent) : QWidget(parent), m
     m_list->setAccessibleName(tr("Installed plugins"));
     auto *scroll = new QScrollArea(this);
     scroll->setObjectName("hnPluginDetailScroll");
+    scroll->setAccessibleName(tr("Plugin details"));
     scroll->setMinimumHeight(240);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -491,9 +492,9 @@ void PluginsPage::rebuildDetail() {
         m_detailLay->addWidget(h);
     }
 
-    // settings (hn.setting): editable while the plugin is enabled, because values live in its declared state
+    // Settings remain available from the package registration cache while a plugin is disabled.
     const auto settings = mgr->registry()->settings(m.id);
-    if (!settings.isEmpty() && info.status == Status::Enabled) {
+    if (!settings.isEmpty()) {
         m_detailLay->addWidget(sectionLabel(tr("SETTINGS"), m_detail));
         for (const auto &s : settings) {
             QLabel *lab = s.type == "bool" ? new CheckCaption(s.title, m_detail) : new QLabel(s.title, m_detail);
@@ -573,6 +574,7 @@ void PluginsPage::rebuildDetail() {
             box.setInformativeText(q);
             if (auto *heading = box.findChild<QLabel *>("qt_msgbox_label")) heading->setProperty("hnRole", "heading");
             box.setDefaultButton(QMessageBox::No);
+            box.setEscapeButton(box.button(QMessageBox::No));
             yes = box.exec() == QMessageBox::Yes;
         }
         if (!yes) return;
@@ -609,6 +611,7 @@ void PluginsPage::showAudit(const QString &id) {
     l->addWidget(title);
     auto *ed = new QPlainTextEdit(d);
     ed->setObjectName("hnAuditText");
+    ed->setAccessibleName(tr("Audit log"));
     ed->setReadOnly(true);
     ed->setLineWrapMode(QPlainTextEdit::NoWrap);
     const auto restyle = [ed] {

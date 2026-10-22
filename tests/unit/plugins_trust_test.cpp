@@ -6,6 +6,75 @@ using namespace hn::plugins::test;
 class TrustTest : public QObject {
     Q_OBJECT
 private slots:
+    void reloadKeepsRecordsWhenTheFileBecomesUnreadable() {
+        QTemporaryDir d;
+        const QString path = d.path() + "/plugins.json";
+        TrustStore a(path);
+        QVERIFY(a.recordConsent("p", {"note.read"}, "h"));
+        QVERIFY(a.setEnabled("p", true));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("{ not json");
+        f.close();
+        QVERIFY(!a.reload());
+        QVERIFY2(a.record("p").hasConsent && a.record("p").enabled, "a failed reload must not drop the in-memory consent");
+        TrustStore b(path);   // plain load() of a corrupt file is still empty (fail closed)
+        QVERIFY(!b.load());
+        QVERIFY(!b.record("p").hasConsent);
+    }
+    void unreadableTrustFileKeepsOldConsentGrantsNothingNewAndScanSaysSo() {
+        Rig r;
+        QVERIFY(r.addLua("old", {}, "hn.command{id='c',title='C',run=function() end}"));
+        const QString trustPath = r.env.state() + "/plugins.json";
+        QVERIFY(QFileInfo::exists(trustPath));
+        writeFile(r.env.plugins() + "/fresh/plugin.json", manifestJson("fresh", {}));
+        writeFile(r.env.plugins() + "/fresh/main.lua", "");
+        writeFile(trustPath, "{ not json");
+        QVERIFY2(!r.mgr->scan(), "a scan that could not read the trust file must not report success");
+        QCOMPARE(r.mgr->info("old").status, Status::Enabled);        // consent already granted is retained
+        QVERIFY(!r.mgr->info("fresh").consented);                     // nothing new is authorised
+        QVERIFY(r.mgr->info("fresh").status != Status::Enabled);
+    }
+    void unreadableOrWrongShapeTrustFileIsNeverSilentlyOverwritten() {
+        QTemporaryDir d;
+        const QString path = d.path() + "/plugins.json";
+        {
+            TrustStore a(path);
+            QVERIFY(a.recordConsent("keep", {"note.read"}, "h1"));
+        }
+        QFile goodFile(path);
+        QVERIFY(goodFile.open(QIODevice::ReadOnly));
+        const QByteArray good = goodFile.readAll();
+        goodFile.close();
+        for (const char *shape : {"{\"version\":1}", "{\"plugins\":[]}", "{\"plugins\":\"x\"}", "[]"}) {
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(shape);
+            f.close();
+            TrustStore b(path);
+            QVERIFY2(!b.load(), shape);                        // wrong shape is a failed load, not an empty store
+            QVERIFY(b.recordConsent("new", {}, "h2"));       // corrupt file: old bytes kept beside it, then replaced
+            QVERIFY(QFileInfo::exists(path + ".corrupt"));
+            QFile::remove(path + ".corrupt");
+        }
+        {   // an existing file that cannot be opened is left alone
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(good);
+            f.close();
+            QVERIFY(QFile::setPermissions(path, QFileDevice::Permissions()));
+            if (!QFile(path).open(QIODevice::ReadOnly)) {      // (root can still read it: nothing to prove then)
+                TrustStore c(path);
+                QVERIFY(!c.load());
+                QVERIFY(!c.recordConsent("new", {}, "h3"));
+                QVERIFY(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+                QFile r(path);
+                QVERIFY(r.open(QIODevice::ReadOnly));
+                QCOMPARE(r.readAll(), good);
+            }
+            QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        }
+    }
     void storePersistsAndRequiresConsent() {
         TmpEnv env;
         const QString path = env.state() + "/plugins.json";

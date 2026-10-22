@@ -29,6 +29,8 @@ public:
   QAction* newNoteAction() { return m_new; }
   QAction* showOrganizerAction() { return m_show; }
   QAction* quitAction() { return m_quit; }
+  QIcon icon() const { return m_icon.icon(); }
+  void setIcon(const QIcon& icon) { m_icon.setIcon(icon); }
 
 signals:
   void newNoteRequested();

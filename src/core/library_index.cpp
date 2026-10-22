@@ -182,6 +182,14 @@ struct NameMaps {
 };
 
 // ---------- SQLite (worker thread only) ----------
+bool sqliteVersionSupported(const QString &version) {
+    const QStringList p = version.split(QLatin1Char('.'));
+    if (p.size() < 2) return false;
+    bool okMajor = false, okMinor = false;
+    const int major = p[0].toInt(&okMajor), minor = p[1].toInt(&okMinor);
+    return okMajor && okMinor && (major > 3 || (major == 3 && minor >= 35));
+}
+
 struct LibraryIndex::Impl {
     QString root, dbPath, conn;
     bool opened = false;
@@ -193,6 +201,7 @@ struct LibraryIndex::Impl {
     QSqlDatabase db() const { return QSqlDatabase::database(conn, false); }
     bool exec(const QString &sql) { QSqlQuery q(db()); return q.exec(sql); }
 
+    QString unsupportedSqlite;   // non-empty: the runtime SQLite is too old
     bool open() {
         if (opened) return true;
         QDir().mkpath(QFileInfo(dbPath).absolutePath());
@@ -203,6 +212,17 @@ struct LibraryIndex::Impl {
                 d.setDatabaseName(dbPath);
                 bool ok = d.open();
                 int ver = -1;
+                if (ok) {
+                    QSqlQuery vq(d);
+                    // Only a successfully read, too-old version is "unsupported"; a failing query is the corrupt-cache path below.
+                    if (vq.exec("SELECT sqlite_version()") && vq.next() && !sqliteVersionSupported(vq.value(0).toString())) {
+                        unsupportedSqlite = vq.value(0).toString();
+                        qWarning().noquote() << "hyprnotes: SQLite" << unsupportedSqlite << "is older than the required 3.35; search is unavailable";
+                        d.close();
+                        QSqlDatabase::removeDatabase(conn);
+                        return false;
+                    }
+                }
                 if (ok) {
                     exec("PRAGMA cache_size=-4096");   // 4 MiB page cache
                     exec("PRAGMA temp_store=1");       // file-backed temp work
@@ -220,7 +240,7 @@ struct LibraryIndex::Impl {
         }
         return false;
     }
-    static constexpr int kSchemaVersion = 2;
+    static constexpr int kSchemaVersion = 3;
     bool createSchema() {
         const char *stmts[] = {
             "CREATE TABLE notes(id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, title TEXT, folder TEXT, size INTEGER, mtime INTEGER, fileid TEXT, tags TEXT)",
@@ -229,9 +249,12 @@ struct LibraryIndex::Impl {
             "CREATE INDEX tags_tag ON tags(tag)", "CREATE INDEX tags_note ON tags(note_id)",
             "CREATE TABLE folders(path TEXT PRIMARY KEY)",
             "CREATE VIRTUAL TABLE fts USING fts5(title, body, tags, tokenize='unicode61 remove_diacritics 2', prefix='2 3')",
+            // v3: case-sensitive trigram postings (no positions, text read back from fts) so the raw-literal search preference
+            // finds candidate notes without scanning every body; matches are re-checked with instr(), so this only ever narrows.
+            "CREATE VIEW fts_src AS SELECT rowid AS id, title AS t, body AS b FROM fts",
+            "CREATE VIRTUAL TABLE fts_raw USING fts5(t, b, content='fts_src', content_rowid='id', tokenize='trigram case_sensitive 1', detail=column)",
             // v2: link graph, frontmatter fields, tasks, aliases. target_resolved = destination note id (NULL: unresolved/ambiguous)
-            "CREATE TABLE links(id INTEGER PRIMARY KEY, src_id INTEGER NOT NULL, target_raw TEXT NOT NULL, target_key TEXT, target_tail TEXT, target_lc TEXT,"
-            " target_resolved INTEGER, ambiguous INTEGER NOT NULL DEFAULT 0, anchor TEXT, alias TEXT, kind TEXT NOT NULL, line INTEGER, context TEXT)",
+            "CREATE TABLE links(id INTEGER PRIMARY KEY, src_id INTEGER NOT NULL, target_raw TEXT NOT NULL, target_key TEXT, target_tail TEXT, target_lc TEXT, target_resolved INTEGER, ambiguous INTEGER NOT NULL DEFAULT 0, anchor TEXT, alias TEXT, kind TEXT NOT NULL, line INTEGER, context TEXT)",
             "CREATE INDEX links_src ON links(src_id)", "CREATE INDEX links_dest ON links(target_resolved)",
             "CREATE INDEX links_tail ON links(target_tail)", "CREATE INDEX links_lc ON links(target_lc)",
             "CREATE TABLE meta(id INTEGER PRIMARY KEY, note_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT)",
@@ -240,7 +263,7 @@ struct LibraryIndex::Impl {
             "CREATE INDEX tasks_note ON tasks(note_id)", "CREATE INDEX tasks_done ON tasks(done)",
             "CREATE TABLE aliases(note_id INTEGER NOT NULL, alias TEXT NOT NULL, alias_lc TEXT NOT NULL)",
             "CREATE INDEX aliases_lc ON aliases(alias_lc)", "CREATE INDEX aliases_note ON aliases(note_id)",
-            "PRAGMA user_version=2"};
+            "PRAGMA user_version=3"};
         for (auto *s : stmts) if (!exec(QString::fromLatin1(s))) return false;
         return true;
     }
@@ -274,7 +297,8 @@ struct LibraryIndex::Impl {
     }
 
     void removeRowById(const QVariant &id) {
-        for (auto *sql : {"DELETE FROM fts WHERE rowid=?", "DELETE FROM tags WHERE note_id=?", "DELETE FROM notes WHERE id=?",
+        for (auto *sql : {"INSERT INTO fts_raw(fts_raw,rowid,t,b) SELECT 'delete',id,t,b FROM fts_src WHERE id=?",   // before the fts row (its text) goes
+                          "DELETE FROM fts WHERE rowid=?", "DELETE FROM tags WHERE note_id=?", "DELETE FROM notes WHERE id=?",
                           "DELETE FROM links WHERE src_id=?", "DELETE FROM tasks WHERE note_id=?", "DELETE FROM meta WHERE note_id=?",
                           "DELETE FROM aliases WHERE note_id=?"}) {
             QSqlQuery d(db());
@@ -324,6 +348,10 @@ struct LibraryIndex::Impl {
         f.prepare("INSERT INTO fts(rowid,title,body,tags) VALUES(?,?,?,?)");
         for (const QVariant &v : {nid, QVariant(m.title), QVariant(body), QVariant(m.tags.join(' '))}) f.addBindValue(v);
         f.exec();
+        QSqlQuery fr(db());
+        fr.prepare("INSERT INTO fts_raw(rowid,t,b) VALUES(?,?,?)");
+        for (const QVariant &v : {nid, QVariant(m.title), QVariant(body)}) fr.addBindValue(v);
+        fr.exec();
         if (!m.tags.isEmpty()) {
             QSqlQuery tq(db());
             tq.prepare("INSERT INTO tags(note_id,tag) VALUES(?,?)");
@@ -383,7 +411,7 @@ struct LibraryIndex::Impl {
     void flushResolve() {
         if (pendTails.isEmpty() && pendAliases.isEmpty()) return;
         ensureMaps();
-        struct Row { qint64 id, src, dest; int amb; QString raw; };
+        struct Row { qint64 id = 0, src = 0, dest = 0; int amb = 0; QString raw; };
         QList<Row> rows;
         auto collect = [&](QSqlQuery &q) {
             while (q.next()) rows.append({q.value(0).toLongLong(), q.value(1).toLongLong(), q.value(3).isNull() ? -1 : q.value(3).toLongLong(), q.value(4).toInt(), q.value(2).toString()});
@@ -448,33 +476,87 @@ IndexRow rowFrom(QSqlQuery &q) {
     return r;
 }
 
+// FTS5 query selecting the notes that can contain `text` verbatim: every three-code-point window must occur (case-sensitive
+// trigram index). Capped to 16 windows (first 8 + last 8); any subset is still a superset of the true matches. Empty when the
+// text has fewer than three code points, which the trigram index cannot answer.
+QString trigramQuery(const QString &text) {
+    const QList<uint> cps = text.toUcs4();
+    const std::u32string u32(cps.cbegin(), cps.cend());
+    if (cps.size() < 3 || text.contains(QChar(0))) return {};   // a NUL ends the FTS5 query string: use the instr() scan
+    QStringList windows;
+    for (qsizetype i = 0; i + 3 <= cps.size(); ++i) {
+        QString w = QString::fromUcs4(u32.data() + i, 3).replace(QLatin1Char('"'), QStringLiteral("\"\""));
+        w = QLatin1Char('"') + w + QLatin1Char('"');
+        if (!windows.contains(w)) windows << w;
+    }
+    if (windows.size() > 16) windows = windows.mid(0, 8) + windows.mid(windows.size() - 8);
+    return windows.join(QStringLiteral(" AND "));
+}
+
 // nullopt => cancelled
 std::optional<SearchPage> doSearch(LibraryIndex::Impl &im, const IndexQuery &iq, quint64 id, const std::atomic<quint64> *latest) {
     SearchPage page;
     page.id = id;
-    if (!im.open()) return page;
+    if (!im.open()) {
+        page.error = im.unsupportedSqlite.isEmpty() ? QStringLiteral("index unavailable")
+                                                    : QStringLiteral("SQLite %1 is older than the required 3.35").arg(im.unsupportedSqlite);
+        return page;
+    }
     QStringList conds;
     QVariantList binds, orderBinds;
-    QString from, order, snip = "''";
+    QString from, order, snip = "''", exactMatch;
+    bool useExactFts = false, useTrigrams = false, trigramExact = false;
+    QString trigramMatch;
     QString text = iq.text.trimmed();
     if (!text.isEmpty()) {
         // Every whitespace-separated word becomes one quoted FTS phrase of its alphanumeric tokens
         // ("C++" -> "C", "a:b" -> "a b", "foo-bar" -> "foo bar"); the last gets a prefix star. No user
         // character reaches FTS syntax: tokens contain only letters/digits/marks.
         QStringList words;
+        QStringList exactTerms;
+        useExactFts = true;
         for (const auto &w : text.split(QRegularExpression(R"(\s+)"), Qt::SkipEmptyParts)) {
             QStringList t = ftsTerms(w);
-            if (!t.isEmpty()) words << "\"" + t.join(' ') + "\"";
+            if (!t.isEmpty()) {
+                words << "\"" + t.join(' ') + "\"";
+                exactTerms << t;
+            }
         }
         if (words.isEmpty()) return page;
+        const bool quotedSingleLiteral = text.startsWith(QLatin1Char('"')) && text.endsWith(QLatin1Char('"')) && exactTerms.size() == 1;
+        bool hasLetters = false;
+        for (qsizetype i = 0; i < text.size(); ++i) {
+            const QChar c = text[i];
+            hasLetters |= c.isLetter();
+            const bool ordinary = c.isLetterOrNumber() || c.isMark() || c.isSpace();
+            const bool queryMarker = (c == QLatin1Char('#') && text.startsWith(QLatin1Char('#')))
+                || (c == QLatin1Char('*') && i == text.size() - 1);
+            const bool phraseQuote = c == QLatin1Char('"') && !quotedSingleLiteral;
+            if (!(ordinary || queryMarker || phraseQuote)) { useExactFts = false; break; }
+        }
+        if (quotedSingleLiteral) useExactFts = false;
+        if (hasLetters && text == text.toUpper()) useExactFts = false;
+        if (useExactFts) exactMatch = QLatin1Char('"') + exactTerms.join(QLatin1Char(' ')) + QLatin1Char('"');
         words.last() += "*";
         QString match = words.join(' ');
         from = "fts JOIN notes n ON n.id=fts.rowid";
+        if (useExactFts) from += " LEFT JOIN exact ON exact.rowid=fts.rowid";
+        else {
+            trigramMatch = trigramQuery(text);
+            useTrigrams = !trigramMatch.isEmpty();
+            trigramExact = useTrigrams && text.toUcs4().size() == 3;   // one window: the trigram hit IS the substring match
+            if (useTrigrams) from += " LEFT JOIN lit ON lit.rowid=fts.rowid";
+        }
         conds << "fts MATCH ?";
         binds << match;
-        // Prefix matches on short words ("C", "and") hit most notes: notes containing the text exactly as typed come first.
-        order = "ORDER BY (instr(fts.body,?)>0 OR instr(fts.title,?)>0) DESC, fts.rank";
-        orderBinds << text << text;
+        if (useExactFts) order = "ORDER BY (exact.rowid IS NOT NULL) DESC, fts.rank";
+        else if (useTrigrams) {
+            order = "ORDER BY (lit.rowid IS NOT NULL) DESC, fts.rank";
+        } else {
+            // Preserve raw punctuation-literal preference when FTS tokenization discards punctuation.
+            order = "ORDER BY (instr(fts.body,?)>0 OR instr(fts.title,?)>0) DESC, fts.rank";
+            orderBinds << text << text;
+        }
         snip = "snippet(fts,1,'[',']','...',12)";
     } else {
         from = "notes n";
@@ -482,16 +564,22 @@ std::optional<SearchPage> doSearch(LibraryIndex::Impl &im, const IndexQuery &iq,
     }
     if (!iq.folder.isEmpty()) { conds << "(n.folder=? OR n.folder LIKE ? ESCAPE '\\')"; binds << iq.folder << QString(iq.folder).replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_") + "/%"; }
     if (!iq.tag.isEmpty()) { conds << "EXISTS(SELECT 1 FROM tags t WHERE t.note_id=n.id AND t.tag=?)"; binds << iq.tag.toLower(); }
-    QString sql = "SELECT n.path,n.title,n.folder,n.size,n.mtime,n.tags," + snip + " FROM " + from +
+    QString sql = (useExactFts ? "WITH exact AS MATERIALIZED (SELECT rowid FROM fts WHERE fts MATCH ?) " : QString())
+                + (trigramExact ? "WITH lit AS MATERIALIZED (SELECT rowid FROM fts_raw WHERE fts_raw MATCH ?) "
+                   : useTrigrams ? "WITH lit AS MATERIALIZED (SELECT fts.rowid AS rowid FROM fts_raw JOIN fts ON fts.rowid=fts_raw.rowid "
+                                   "WHERE fts_raw MATCH ? AND (instr(fts.body,?)>0 OR instr(fts.title,?)>0)) " : QString())
+                + "SELECT n.path,n.title,n.folder,n.size,n.mtime,n.tags," + snip + " FROM " + from +
                   (conds.isEmpty() ? "" : " WHERE " + conds.join(" AND ")) + " " + order + " LIMIT ? OFFSET ?";
     QSqlQuery q(im.db());
     q.setForwardOnly(true);
     q.prepare(sql);
+    if (useExactFts) q.addBindValue(exactMatch);
+    if (useTrigrams) { q.addBindValue(trigramMatch); if (!trigramExact) { q.addBindValue(text); q.addBindValue(text); } }
     for (auto &b : binds) q.addBindValue(b);
     for (auto &b : orderBinds) q.addBindValue(b);
     q.addBindValue(iq.limit + 1);
     q.addBindValue(iq.offset);
-    if (!q.exec()) return page;
+    if (!q.exec()) { page.error = q.lastError().text().isEmpty() ? QStringLiteral("search failed") : q.lastError().text(); return page; }
     int n = 0;
     while (q.next()) {
         if (latest && (++n & 15) == 0 && latest->load() != id) return std::nullopt;

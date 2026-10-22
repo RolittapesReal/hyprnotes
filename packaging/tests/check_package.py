@@ -69,7 +69,7 @@ check(b"<svg" in data("usr/share/icons/hicolor/scalable/apps/hyprnotes.svg"), "s
 check(re.search(r"^pkgname = hyprnotes$", pkginfo, re.M) and re.search(r"^arch = x86_64$", pkginfo, re.M), "PKGINFO name/arch")
 check(re.search(r"^license = MIT$", pkginfo, re.M), "PKGINFO license MIT")
 deps = set(re.findall(r"^depend = (\S+)", pkginfo, re.M))
-check({"qt6-base", "qt6-svg", "qt6-wayland", "md4c", "sqlite"} <= deps, f"PKGINFO depends {sorted(deps)}")
+check({"qt6-base", "qt6-svg", "qt6-wayland", "md4c", "sqlite>=3.35"} <= deps, f"PKGINFO depends {sorted(deps)}")   # search needs SQLite 3.35+
 tmp = os.path.join(root, "packaging/out/check-hyprnotes"); open(tmp, "wb").write(ex)
 needed = re.findall(r"Shared library: \[(\S+)\]", subprocess.run(["readelf", "-d", tmp], capture_output=True, text=True).stdout)
 os.remove(tmp)

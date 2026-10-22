@@ -1,23 +1,23 @@
 # Hyprnotes
 
-Markdown notes for Hyprland. One small native process gives you an organizer and as many floating sticky notes as you want. Your notes stay plain `.md` files in a folder you pick.
+Hyprnotes keeps Markdown notes in a folder you choose. The organizer handles your notes, and each one can open in its own floating window.
 
 ![Organizer](docs/images/app-organizer-light.png)
 
 ## What it does
 
-- Edit Markdown visually, with a formatting toolbar, or switch to source mode. Opening a note never rewrites it.
-- Search, tags and folders in an organizer. Pop any note out into its own sticky window.
+- Edit Markdown with the formatting toolbar or in source mode. Opening a note does not rewrite it.
+- Search notes, organize them with tags and folders, or open one in a separate sticky window.
 - Autosave, crash recovery, and a clear conflict prompt if another program changes a note you have open.
-- Flat modernist look in light and dark. Import your own theme (Hyprnotes JSON, base16 or VS Code).
-- Lua plugins for commands, typing triggers, side panels, `[[link]]` completion and a command palette (Ctrl+Shift+P), with a plugin browser built in.
-- Lives in the tray, runs as a single instance, and stays light on memory and CPU.
+- A flat Modernist theme in light and dark, plus imports from Hyprnotes JSON, base16 and VS Code themes.
+- Lua plugins can add commands, typing triggers, side panels and `[[link]]` completion. A built-in browser lists plugins, and Ctrl+Shift+P opens the command palette.
+- Runs as a single instance and can stay in the tray.
 
-Written in C++20 with Qt 6. Targets Arch Linux and Hyprland on Wayland.
+Hyprnotes is written in C++20 with Qt 6 for Arch Linux and Hyprland on Wayland.
 
 ## Install
 
-You need Arch Linux (or another pacman-based distro) on x86_64 and a Wayland session. These steps build the package from a clone, which works without a release.
+You need Arch Linux (or another pacman-based distro) on x86_64 and a Wayland session. Build the package from a clone with these steps; you do not need a published release.
 
 1. Install the build tools. The runtime libraries come in automatically when you install the package.
 
@@ -45,7 +45,7 @@ You need Arch Linux (or another pacman-based distro) on x86_64 and a Wayland ses
    hyprnotes
    ```
 
-To update, pull, rebuild and run step 3 again; close Hyprnotes first so the new version starts. `sudo pacman -R hyprnotes` removes it and leaves your notes and settings alone.
+To update, pull the latest changes, rebuild, then repeat step 3. Close Hyprnotes before installing so the next launch uses the new version. `sudo pacman -R hyprnotes` removes it and leaves your notes and settings alone.
 
 If you'd rather not build, download the signed package from the [releases page](https://github.com/RolittapesReal/hyprnotes/releases). [docs/install.md](docs/install.md) covers verifying it, the bootstrap script, the tray and Hyprland setup, and what to do when something goes wrong.
 
@@ -55,21 +55,21 @@ If you'd rather not build, download the signed package from the [releases page](
 hyprnotes [--show-organizer | --new-note | --background]
 ```
 
-Running it again talks to the instance that is already open. The tray icon needs Waybar's `tray` module. Window rules and key binds for Hyprland are an opt-in snippet in `/usr/share/hyprnotes/hyprland/`; nothing edits your config for you.
+Running it again talks to the instance that is already open. The tray icon appears when a StatusNotifier host is available, such as Waybar with its `tray` module enabled. Optional Hyprland window rules and key binds are in `/usr/share/hyprnotes/hyprland/`; add them to your config if you want them.
 
 Settings live in `~/.config/hyprnotes/`, see [docs/theme-reference.md](docs/theme-reference.md).
 
 ## Plugins
 
-Plugins let you change how the app behaves. They are not reviewed by this project. A plugin can read or change your notes and, depending on its permissions, send data over the network, so only install plugins from sources you trust. Each plugin stays off until you approve its permissions.
+Plugins can change how Hyprnotes behaves, but this project does not review them. Depending on its permissions, a plugin can read or change notes or send data over the network. Install plugins only from sources you trust; a plugin remains disabled until you approve its permissions.
 
-Settings, Plugins, Browse lists plugins from the [hyprnotes-plugins](https://github.com/RolittapesReal/hyprnotes-plugins) registry. It only contacts GitHub after you open the tab and agree to a notice. Each download is checked against the registry's hash before the usual permission dialog appears. That catches a damaged download, not a plugin you shouldn't trust. Native plugins are listed but can't be installed from there yet.
+Open Settings > Plugins > Browse to see entries from the [hyprnotes-plugins](https://github.com/RolittapesReal/hyprnotes-plugins) registry. Hyprnotes contacts GitHub only after you open the tab and accept its notice. It checks each download against the registry hash before showing the permission dialog. This detects a damaged download; it does not establish that a plugin is safe. Native plugins appear in the list but cannot yet be installed there.
 
 Start with [docs/plugins.md](docs/plugins.md). `hyprnotes --new-plugin NAME` creates a working template, and there are examples in `examples/plugins/`.
 
 ## Build from source
 
-You need cmake, ninja, qt6-base, qt6-svg, md4c, sqlite, lua and libarchive.
+You need cmake, ninja, qt6-base, qt6-svg, md4c, sqlite (3.35 or newer), lua and libarchive.
 
 ```sh
 cmake -S . -B build -G Ninja
@@ -79,7 +79,9 @@ ctest --test-dir build
 
 ## Status
 
-Version 0.2.0, early. It has only been tested on one Arch and Hyprland 0.56 machine. A clean-system install, the Hyprland rules on other setups, and long-running use are not covered yet.
+Version 0.2.1, release in preparation. See the [release notes](CHANGELOG.md). The 0.2.1 work includes fixes for Markdown list save/reopen behavior and Organizer pagination during sync. Broader hardening qualification is deferred.
+
+Before the 0.2.1 version update, the full Release suite passed 88/88 and the matching ASan/LSan/UBSan run passed 87/88, with one unchanged load-time assertion failing and no sanitizer diagnostics. The final focused regression run passed all three targets. Numeric performance and memory failures remain recorded; reducing scope did not turn them into passes. Compositor checks come from one Arch/Hyprland setup and do not establish compatibility across machines. See the [testing notes](docs/testing.md) for evidence and limits, and the [live-test recipe](tests/live/README.md) for isolated compositor checks.
 
 ## License
 

@@ -22,7 +22,8 @@ struct TrustRecord {
 class TrustStore {
 public:
     explicit TrustStore(QString path);
-    bool load();  // missing/corrupt file => empty store (corrupt => everything disabled)
+    bool load();  // missing file => empty store; unreadable or corrupt (or not a plugins object) => empty store, false (everything disabled)
+    bool reload();  // like load(), but keeps the current records when the file cannot be read
     TrustRecord record(const QString &id) const { return recs_.value(id); }
     bool known(const QString &id) const { return recs_.contains(id); }
     bool recordConsent(const QString &id, const QStringList &perms, const QString &hash);
@@ -37,6 +38,9 @@ private:
     bool save();
     QString path_;
     QHash<QString, TrustRecord> recs_;
+    // What the last load() found. A file that exists but could not be read is never overwritten (that would erase every consent);
+    // a corrupt one is copied to <path>.corrupt first.
+    enum class FileState { Ok, Unreadable, Corrupt } fileState_ = FileState::Ok;
 };
 
 // Append-only JSONL, rotated at maxBytes keeping `files` files (current + .1 + .2).

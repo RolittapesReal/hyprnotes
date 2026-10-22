@@ -2,6 +2,7 @@
 #include "ui_polish_test_util.h"
 #include "settings_dialog.h"
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFontDatabase>
@@ -14,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPalette>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -28,6 +30,8 @@
 #include <QTextDocument>
 #include <QTextEdit>
 #include <QVBoxLayout>
+#include <limits>
+#include <vector>
 #include <hn/theme/theme.h>
 #include <hn/theme/theme_io.h>
 
@@ -82,6 +86,26 @@ int arrowInk(QWidget &widget, const QRect &subcontrol, const QColor &background,
             if (distance(pixel, background) > 60 && distance(pixel, tint) < 100) ++ink;
         }
     return ink;
+}
+
+QRect paintedTextBounds(const QImage &image, const QColor &foreground, const QColor &background,
+                        const QRect &clip, int *pixels = nullptr) {
+    QRect bounds;
+    int count = 0;
+    for (int y = qMax(0, clip.top()); y <= qMin(image.height() - 1, clip.bottom()); ++y)
+        for (int x = qMax(0, clip.left()); x <= qMin(image.width() - 1, clip.right()); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            const int fgDistance = qAbs(pixel.red() - foreground.red()) + qAbs(pixel.green() - foreground.green())
+                + qAbs(pixel.blue() - foreground.blue());
+            const int bgDistance = qAbs(pixel.red() - background.red()) + qAbs(pixel.green() - background.green())
+                + qAbs(pixel.blue() - background.blue());
+            if (fgDistance < 75 && bgDistance > 60) {
+                bounds |= QRect(x, y, 1, 1);
+                ++count;
+            }
+        }
+    if (pixels) *pixels = count;
+    return bounds;
 }
 }
 
@@ -326,8 +350,8 @@ private slots:
                 for (auto sc : {QStyle::SC_SpinBoxUp, QStyle::SC_SpinBoxDown}) {
                     const QRect r = widget.style()->subControlRect(QStyle::CC_SpinBox, &o, sc, &widget);
                     QVERIFY2(arrowInk(widget, r, theme.surface, tint) >= 4, "spin arrow ink");
-                    const QRect text = widget.style()->subControlRect(QStyle::CC_SpinBox, &o, QStyle::SC_SpinBoxEditField, &widget);
-                    QVERIFY(!text.intersects(r));
+                    const auto *edit = widget.template findChild<QLineEdit *>();
+                    QVERIFY(edit);
                 }
             };
             checkSpin(spin); checkSpin(real);
@@ -358,6 +382,244 @@ private slots:
         for (auto sc : {QStyle::SC_SpinBoxUp, QStyle::SC_SpinBoxDown, QStyle::SC_SpinBoxEditField})
             QCOMPARE(spin.style()->subControlRect(QStyle::CC_SpinBox, &spinFocused, sc, &spin),
                      spin.style()->subControlRect(QStyle::CC_SpinBox, &spinUnfocused, sc, &spin));
+    }
+
+    void spinboxTextAndBoundaryClicksRemainUsable_data() {
+        QTest::addColumn<bool>("dark");
+        QTest::addColumn<bool>("real");
+        for (bool dark : {false, true}) for (bool real : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(dark ? "dark" : "light").arg(real ? "double" : "int")))
+                << dark << real;
+    }
+    void spinboxTextAndBoundaryClicksRemainUsable() {
+        QFETCH(bool, dark);
+        QFETCH(bool, real);
+        QWidget host;
+        Spin<QSpinBox> integer;
+        Spin<QDoubleSpinBox> decimal;
+        QWidget *widget = real ? static_cast<QWidget *>(&decimal) : static_cast<QWidget *>(&integer);
+        QLineEdit *edit = nullptr;
+        host.resize(320, 90);
+        widget->setParent(&host);
+        widget->setGeometry(10, 10, 298, 32);
+        auto theme = hn::theme::loadTheme("modernist", dark);
+        hn::theme::applyTheme(theme);
+        if (real) {
+            decimal.setRange(-1.0e100, 1.0e100);
+            decimal.setDecimals(100);
+        } else {
+            integer.setRange(0, std::numeric_limits<int>::max());
+            integer.setValue(integer.minimum());
+        }
+        if (real) decimal.setValue(decimal.minimum());
+        const auto spinOption = [&]() {
+            return real ? static_cast<Spin<QDoubleSpinBox> *>(widget)->option()
+                        : static_cast<Spin<QSpinBox> *>(widget)->option();
+        };
+        host.show();
+        host.activateWindow();
+        QTRY_VERIFY(host.isActiveWindow());
+        QTRY_COMPARE(host.styleSheet(), hn::theme::styleSheetFor(theme));
+        edit = widget->findChild<QLineEdit *>();
+        QVERIFY(edit);
+        const QString minimum = edit->text();
+        QVERIFY(minimum.size() >= (real ? 30 : 1));
+        const QImage minimumRender = widget->grab().toImage();
+        QVERIFY(qAbs(minimumRender.devicePixelRatio() - 1.0) < 0.01);
+        int minimumInk = 0;
+        const QRect valueEditor(edit->geometry().topLeft(), edit->size());
+        const QRect minimumInkBounds = paintedTextBounds(minimumRender, edit->palette().color(QPalette::Text),
+            edit->palette().color(QPalette::Base), valueEditor.adjusted(2, 2, -2, -2), &minimumInk);
+        QVERIFY2(minimumInk >= 4, "minimum numeric value must produce visible glyph ink in widget render");
+        for (auto sc : {QStyle::SC_SpinBoxUp, QStyle::SC_SpinBoxDown}) {
+            const auto option = spinOption();
+            const QRect arrow = widget->style()->subControlRect(QStyle::CC_SpinBox, &option, sc, widget);
+            QVERIFY2(!minimumInkBounds.intersects(arrow), "minimum-value glyph ink must not paint in arrow hit area");
+        }
+        if (real) decimal.setValue(decimal.maximum());
+        else integer.setValue(integer.maximum());
+        const QString maximal = edit->text();
+        QVERIFY(maximal.size() >= (real ? 30 : 10));
+        const QImage maximumRender = widget->grab().toImage();
+        const qreal maximumDpr = maximumRender.devicePixelRatio();
+        QVERIFY(qAbs(maximumDpr - 1.0) < 0.01);
+        int maximumInk = 0;
+        const QRect maximumEditor(edit->geometry().topLeft(), edit->size());
+        const QRect maximumInkBounds = paintedTextBounds(maximumRender, edit->palette().color(QPalette::Text),
+            edit->palette().color(QPalette::Base), maximumEditor.adjusted(2, 2, -2, -2), &maximumInk);
+        QVERIFY2(maximumInk >= 8, "maximum numeric value must produce visible glyph ink in widget render");
+        for (auto sc : {QStyle::SC_SpinBoxUp, QStyle::SC_SpinBoxDown}) {
+            const auto option = spinOption();
+            const QRect arrow = widget->style()->subControlRect(QStyle::CC_SpinBox, &option, sc, widget);
+            QVERIFY2(!maximumInkBounds.intersects(arrow), "maximum-value glyph ink must not paint in arrow hit area");
+        }
+
+        // Use an overlong editable draft to force QLineEdit's real horizontal-scroll path.
+        edit->setFocus();
+        edit->selectAll();
+        QTest::keyClicks(edit, QString(48, QLatin1Char('0')));
+        QCOMPARE(edit->text().size(), 48);
+        edit->setFocus();
+        edit->setCursorPosition(edit->text().size());
+        QTRY_VERIFY(edit->hasFocus());
+        const QRect editRect = edit->geometry();
+        const QImage rendered = widget->grab().toImage();
+        const qreal dpr = rendered.devicePixelRatio();
+        QVERIFY(qAbs(dpr - 1.0) < 0.01);
+        const QPoint offset = editRect.topLeft();
+        const QColor textColor = edit->palette().color(QPalette::Text);
+        const QColor baseColor = edit->palette().color(QPalette::Base);
+        const QRect editorPixels(qRound(offset.x() * dpr), qRound(offset.y() * dpr),
+                                 qRound(editRect.width() * dpr), qRound(editRect.height() * dpr));
+        int ink = 0;
+        const QRect draftInk = paintedTextBounds(rendered, textColor, baseColor, editorPixels.adjusted(2, 2, -2, -2), &ink);
+        QVERIFY2(ink >= 8, "long editable spinbox text must paint glyph ink in actual widget rendering");
+        QVERIFY2(draftInk.right() >= editorPixels.right() - 12, "scrolled long text must remain visible at editor far edge");
+        for (auto sc : {QStyle::SC_SpinBoxUp, QStyle::SC_SpinBoxDown}) {
+            const auto option = spinOption();
+            const QRect arrow = widget->style()->subControlRect(QStyle::CC_SpinBox, &option, sc, widget);
+            const QRect arrowPixels(qRound(arrow.x() * dpr), qRound(arrow.y() * dpr),
+                                    qRound(arrow.width() * dpr), qRound(arrow.height() * dpr));
+            QVERIFY2(!draftInk.intersects(arrowPixels), "rendered editor glyph ink must not enter spinbox arrow hit area");
+        }
+
+        // Selection reaching the end and the insertion caret must both remain visibly rendered.
+        edit->selectAll();
+        const QImage selected = widget->grab().toImage();
+        const QColor selection = edit->palette().color(QPalette::Highlight);
+        int selectedInk = 0;
+        const QRect selectedInkBounds = paintedTextBounds(selected,
+            edit->palette().color(QPalette::HighlightedText), selection,
+            editorPixels.adjusted(2, 2, -2, -2), &selectedInk);
+        QVERIFY2(selectedInk >= 8, "selected glyphs must remain visibly rendered");
+        QVERIFY2(selectedInkBounds.right() >= editorPixels.right() - 12,
+                 "selection reaching the end must remain visible at editor far edge");
+        for (auto sc : {QStyle::SC_SpinBoxUp, QStyle::SC_SpinBoxDown}) {
+            const auto option = spinOption();
+            const QRect arrow = widget->style()->subControlRect(QStyle::CC_SpinBox, &option, sc, widget);
+            QVERIFY2(!selectedInkBounds.intersects(arrow), "selected glyph ink must not paint in arrow hit area");
+        }
+        int selectedPixels = 0;
+        for (int y = editorPixels.top(); y <= editorPixels.bottom(); ++y)
+            for (int x = editorPixels.left(); x <= editorPixels.right(); ++x) {
+                const QColor pixel = selected.pixelColor(x, y);
+                if (qAbs(pixel.red() - selection.red()) + qAbs(pixel.green() - selection.green())
+                    + qAbs(pixel.blue() - selection.blue()) < 75) ++selectedPixels;
+            }
+        QVERIFY(selectedPixels >= 20);
+        edit->deselect();
+        edit->setCursorPosition(edit->text().size());
+        struct CursorFlashTimeRestore {
+            int value;
+            bool active = true;
+            void restore() {
+                if (active) QApplication::setCursorFlashTime(value);
+                active = false;
+            }
+            ~CursorFlashTimeRestore() { restore(); }
+        } restoreCursorFlashTime{QApplication::cursorFlashTime()};
+        QApplication::setCursorFlashTime(200);
+        QCoreApplication::processEvents();
+        const QRect caretGeometry = edit->geometry();
+        const QFont caretFont = edit->font();
+        const QPalette caretPalette = edit->palette();
+        const QString caretText = edit->text();
+        const int caretPosition = edit->cursorPosition();
+        QVERIFY(edit->hasFocus());
+        QVERIFY(!edit->hasSelectedText());
+        struct BlinkRun { QImage image; int frames; };
+        std::vector<BlinkRun> blinkRuns;
+        for (int frame = 0; frame <= 50; ++frame) {
+            QCOMPARE(edit->geometry(), caretGeometry);
+            QCOMPARE(edit->font(), caretFont);
+            QCOMPARE(edit->palette(), caretPalette);
+            QCOMPARE(edit->text(), caretText);
+            QCOMPARE(edit->cursorPosition(), caretPosition);
+            QVERIFY(edit->hasFocus());
+            QVERIFY(!edit->hasSelectedText());
+            const QImage image = widget->grab().toImage();
+            if (!blinkRuns.empty() && blinkRuns.back().image == image)
+                ++blinkRuns.back().frames;
+            else
+                blinkRuns.push_back({image, 1});
+            if (frame < 50) QTest::qWait(20);
+        }
+        restoreCursorFlashTime.restore();
+        int repeatedCycle = -1;
+        for (int i = 0; i + 3 < static_cast<int>(blinkRuns.size()); ++i) {
+            const auto &a = blinkRuns[i];
+            const auto &b = blinkRuns[i + 1];
+            const auto &againA = blinkRuns[i + 2];
+            const auto &againB = blinkRuns[i + 3];
+            if (a.frames >= 2 && b.frames >= 2 && againA.frames >= 2 && againB.frames >= 2
+                && !(a.image == b.image) && a.image == againA.image && b.image == againB.image) {
+                repeatedCycle = i;
+                break;
+            }
+        }
+        QVERIFY2(repeatedCycle >= 0,
+                 "same-position caret must produce repeated stable ON/OFF image states within bounded blink window");
+        const QImage caretOn = blinkRuns[repeatedCycle].image;
+        const QImage caretOff = blinkRuns[repeatedCycle + 1].image;
+        QCOMPARE(caretOn.size(), caretOff.size());
+        QCOMPARE(edit->geometry(), caretGeometry);
+        QCOMPARE(edit->font(), caretFont);
+        QCOMPARE(edit->palette(), caretPalette);
+        QCOMPARE(edit->text(), caretText);
+        QVERIFY(edit->hasFocus());
+        QCOMPARE(edit->cursorPosition(), caretPosition);
+        QCOMPARE(caretText.size(), 48);
+        int changedPixels = 0;
+        int rightmostColumnPixels = 0;
+        QRect caretInk;
+        for (int y = 0; y < caretOn.height(); ++y) {
+            for (int x = 0; x < caretOn.width(); ++x) {
+                const QColor on = caretOn.pixelColor(x, y);
+                const QColor off = caretOff.pixelColor(x, y);
+                if (on != off) {
+                    ++changedPixels;
+                    if (x >= editorPixels.right() - 3) ++rightmostColumnPixels;
+                    const QRect pixel(x, y, 1, 1);
+                    caretInk = caretInk.isNull() ? pixel : caretInk.united(pixel);
+                }
+            }
+        }
+        QVERIFY2(changedPixels >= edit->fontMetrics().height() * 2 / 3,
+                 "same-position blink-state difference must contain actual caret paint");
+        QVERIFY2(changedPixels <= edit->fontMetrics().height() * 6,
+                 "same-position blink-state difference must exclude glyph or full-widget changes");
+        QVERIFY2(caretInk.width() <= edit->fontMetrics().horizontalAdvance(QLatin1Char('0')) + 4
+                     && caretInk.height() >= edit->fontMetrics().height() * 2 / 3,
+                 "same-position blink-state difference must have narrow vertical caret shape");
+        const QRect editorContents = edit->contentsRect().translated(edit->geometry().topLeft());
+        QVERIFY2(editorContents.contains(caretInk), "caret-only paint must stay inside actual editor contents");
+        QVERIFY2(rightmostColumnPixels >= edit->fontMetrics().height() * 2 / 3,
+                 "caret at scrolled draft end must be present at editor far edge");
+        for (auto sc : {QStyle::SC_SpinBoxUp, QStyle::SC_SpinBoxDown}) {
+            const auto option = spinOption();
+            const QRect arrow = widget->style()->subControlRect(QStyle::CC_SpinBox, &option, sc, widget);
+            QVERIFY2(!caretInk.intersects(arrow), "caret-only paint must not enter either spinbox arrow hit area");
+        }
+
+        if (real) decimal.setValue(50.0);
+        else integer.setValue(50);
+        const double before = real ? decimal.value() : integer.value();
+        const auto click = [&](int x, bool upDirection) {
+            QTest::mouseClick(widget, Qt::LeftButton, Qt::NoModifier, QPoint(x, upDirection ? 8 : 24));
+        };
+        const auto option = spinOption();
+        const int seam = widget->style()->subControlRect(QStyle::CC_SpinBox, &option, QStyle::SC_SpinBoxUp, widget).left();
+        click(seam - 1, true);
+        QVERIFY(edit->hasFocus());
+        QCOMPARE(real ? decimal.value() : integer.value(), before);
+        click(seam, true);
+        QCOMPARE(real ? decimal.value() : integer.value(), before + 1);
+        click(seam + 1, true);
+        QCOMPARE(real ? decimal.value() : integer.value(), before + 2);
+        click(seam, false);
+        QCOMPARE(real ? decimal.value() : integer.value(), before + 1);
+        click(seam + 1, false);
+        QCOMPARE(real ? decimal.value() : integer.value(), before);
     }
 
     void schemePopupFitsAllThreeRows() {
@@ -423,12 +685,12 @@ private slots:
     void namedPaletteTokens_data() {
         QTest::addColumn<QString>("id");
         QTest::addColumn<QStringList>("colors");
-        QTest::newRow("catppuccin-mocha") << "catppuccin-mocha" << QString("#1E1E2E #181825 #CDD6F4 #BAC2DE #CBA6F7 #11111B #45475A #F38BA8 #A6E3A1 #313244 #F9E2AF #89B4FA").split(' ');
-        QTest::newRow("tokyo-night") << "tokyo-night" << QString("#1A1B26 #24283B #C0CAF5 #A9B1D6 #7AA2F7 #1A1B26 #414868 #F7768E #9ECE6A #292E42 #E0AF68 #7AA2F7").split(' ');
-        QTest::newRow("dracula") << "dracula" << QString("#282A36 #21222C #F8F8F2 #BFBFD3 #BD93F9 #282A36 #6272A4 #FF6E6E #50FA7B #44475A #F1FA8C #8BE9FD").split(' ');
-        QTest::newRow("nord") << "nord" << QString("#2E3440 #3B4252 #ECEFF4 #D8DEE9 #88C0D0 #2E3440 #4C566A #E7A2AA #A3BE8C #434C5E #EBCB8B #81A1C1").split(' ');
-        QTest::newRow("gruvbox-dark") << "gruvbox-dark" << QString("#282828 #3C3836 #EBDBB2 #BDAE93 #FABD2F #282828 #665C54 #FB7C6D #B8BB26 #504945 #FABD2F #83A598").split(' ');
-        QTest::newRow("one-dark") << "one-dark" << QString("#282C34 #21252B #ABB2BF #ABB2BF #61AFEF #21252B #4B5263 #E99AA2 #98C379 #3E4451 #E5C07B #61AFEF").split(' ');
+        QTest::newRow("catppuccin-mocha") << "catppuccin-mocha" << QString("#1E1E2E #181825 #CDD6F4 #BAC2DE #CBA6F7 #11111B #74768A #F38BA8 #A6E3A1 #313244 #F9E2AF #89B4FA").split(' ');
+        QTest::newRow("tokyo-night") << "tokyo-night" << QString("#1A1B26 #24283B #C0CAF5 #A9B1D6 #7AA2F7 #1A1B26 #777F9B #F7768E #9ECE6A #292E42 #E0AF68 #7AA2F7").split(' ');
+        QTest::newRow("dracula") << "dracula" << QString("#282A36 #21222C #F8F8F2 #BFBFD3 #BD93F9 #282A36 #777B8F #FF6E6E #50FA7B #44475A #F1FA8C #8BE9FD").split(' ');
+        QTest::newRow("nord") << "nord" << QString("#2E3440 #3B4252 #ECEFF4 #D8DEE9 #88C0D0 #2E3440 #8992A5 #E7A2AA #A3BE8C #434C5E #EBCB8B #81A1C1").split(' ');
+        QTest::newRow("gruvbox-dark") << "gruvbox-dark" << QString("#282828 #3C3836 #EBDBB2 #BDAE93 #FABD2F #282828 #8A8178 #FB7C6D #B8BB26 #504945 #FABD2F #83A598").split(' ');
+        QTest::newRow("one-dark") << "one-dark" << QString("#282C34 #21252B #ABB2BF #ABB2BF #61AFEF #21252B #777E8A #E99AA2 #98C379 #3E4451 #E5C07B #61AFEF").split(' ');
     }
     void namedPaletteTokens() {
         QFETCH(QString, id);
@@ -514,7 +776,7 @@ private slots:
 
 int main(int argc, char **argv) {
     PolishProfile profile;
-    qputenv("QT_QPA_PLATFORM", "offscreen");
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     if (app.arguments().contains("--builtin-probe")) {

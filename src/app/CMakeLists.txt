@@ -21,7 +21,10 @@ add_executable(hyprnotes main.cpp)
 target_link_libraries(hyprnotes PRIVATE hn_app)
 install(TARGETS hyprnotes RUNTIME DESTINATION bin)
 
-# Tests: tests/unit/app_*_test.cpp, one executable each (offscreen).
+# Tests: tests/unit/app_*_test.cpp, one executable each (offscreen by default).
+# The two popup/focus suites can select a supported display for platform-specific
+# coverage without changing the rest of the app test harness.
+set(HN_POLISH_TEST_QPA_PLATFORM "offscreen" CACHE STRING "Qt platform for app polish tests")
 file(GLOB HN_APP_TESTS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tests/unit/app_*_test.cpp)
 foreach(src ${HN_APP_TESTS})
   get_filename_component(t ${src} NAME_WE)
@@ -34,6 +37,53 @@ foreach(src ${HN_APP_TESTS})
   if(TARGET hn_example_uppercase_selection)
     add_dependencies(${t} hn_example_uppercase_selection)
   endif()
-  add_test(NAME ${t} COMMAND ${t})
-  set_tests_properties(${t} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+  set(test_qpa "offscreen")
+  if(t STREQUAL "app_editor_polish_test" OR t STREQUAL "app_theme_polish_test")
+    set(test_qpa "${HN_POLISH_TEST_QPA_PLATFORM}")
+  endif()
+  if(t STREQUAL "app_a11y_test")
+    # Run each QtTest slot separately so no combined test invocation exceeds the fixed timeout.
+    set(a11y_cases
+      settingsControlsHaveNamesAndCompleteTabCycle
+      settingsPagesStayWithinNarrowLayoutAtEverySupportedFontSize
+      pluginPagesExposeNamesAndCompleteTabCycle
+      consentControlsHaveNamesSafeEscapeAndDefault
+      nativeConsentControlsHaveNamesAndSafeEscape
+      consentUsesNinetyPercentOf1366By768OffscreenScreen
+      commandPaletteSearchHasNameAndEscapeDismisses
+      firstRunFolderDialogHasNamedControlsAndEscapeCancels
+      themeImportPickerExposesKeyboardControlsAndGeometry
+      themeExportPickerExposesKeyboardControlsAndGeometry
+      notesFolderPickerExposesKeyboardControlsAndGeometry
+      pluginFilePickerExposesKeyboardControlsAndGeometry
+      pluginFolderPickerExposesKeyboardControlsAndGeometry
+      firstRunFolderPickerExposesKeyboardControlsAndGeometry
+      linkRenameConfirmationDefaultsToCancelAndEscapeIsSafe
+      pluginBridgePromptEscapeCancelsAndNamesInput
+      pluginBridgeConfirmEscapeUsesSafeDefault
+      renameInputEscapeLeavesNoteUnchanged
+      tagInputEscapeLeavesNoteUnchanged
+      deleteConfirmationHasSafeDefaultAndEscapeKeepsFile
+      pluginRemovalConfirmationHasSafeDefaultAndEscapeKeepsPlugin
+      themeRemovalConfirmationDefaultsToNoAndEscapeKeepsTheme
+      recoveryConfirmationDefaultsToLaterAndEscapePreservesDraft
+      duplicatePluginReplacementDefaultsToNoAndEscapeKeepsInstalledPlugin
+      pluginAuditDialogNamesControlsAndEscapeCloses
+      pluginBridgePickEscapeCancelsAndNamesList
+      builtInThemeTextAndIndicatorPairsMeetContrastThresholds)
+    foreach(test_case IN LISTS a11y_cases)
+      add_test(NAME "${t}_${test_case}" COMMAND "$<TARGET_FILE:${t}>" "${test_case}")
+      set_tests_properties("${t}_${test_case}" PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${test_qpa}" TIMEOUT 120)
+    endforeach()
+  else()
+    add_test(NAME ${t} COMMAND ${t})
+    set_tests_properties(${t} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=${test_qpa}" TIMEOUT 120)
+  endif()
+  if(t STREQUAL "app_a11y_test")
+    # QWindowSystemInterface is test-only here, to resize offscreen QScreen without touching the host desktop.
+    set(QT_NO_PRIVATE_MODULE_WARNING ON)
+    find_package(Qt6GuiPrivate REQUIRED CONFIG)
+    target_link_libraries(${t} PRIVATE Qt6::GuiPrivate)
+    target_compile_definitions(${t} PRIVATE HN_QPA_SCREEN_TEST_API)
+  endif()
 endforeach()

@@ -20,6 +20,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QTimer>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUrl>
@@ -71,6 +72,7 @@ class Server : public QTcpServer {
 public:
     int hits = 0;
     QStringList requests;
+    std::function<void()> onPendingReply;
     explicit Server() {
         QVERIFY(listen(QHostAddress::LocalHost));
         connect(this, &QTcpServer::newConnection, this, [this] {
@@ -98,6 +100,11 @@ private:
         const QString path = req.section(' ', 1, 1);
         const QString me = QString("127.0.0.1:%1").arg(serverPort());
         if (path == "/ok") reply(s, "200 OK", "hello");
+        else if (path == "/pending") {
+            s->write("HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nConnection: keep-alive\r\n\r\npart");
+            s->flush();
+            if (onPendingReply) onPendingReply();
+        }
         else if (path == "/redir-same") s->write(("HTTP/1.1 302 Found\r\nLocation: http://" + me + "/ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").toLatin1()), s->disconnectFromHost();
         else if (path == "/redir-other") s->write(("HTTP/1.1 302 Found\r\nLocation: http://localhost:" + QString::number(serverPort()) + "/ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").toLatin1()), s->disconnectFromHost();
         else if (path == "/redir-https") s->write("HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1/ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), s->disconnectFromHost();
@@ -213,6 +220,50 @@ hn.on("selection.changed", function(p) hn.log("EV selection " .. p) end)
         QVERIFY(logged("EV selection a.md"));
         c.closeNote("a.md");
         QTRY_VERIFY_WITH_TIMEOUT(logged("EV closed a.md"), 3000);
+    }
+
+    void app_started_is_delivered_once_to_plugin_enabled_mid_session() {
+        Lib l;
+        AppController c(accepting(l));
+        c.start(Action::Background);
+        const QString source = l.dir.filePath("src");
+        mk(source, "late", {}, "hn.on('app.started', function(version) hn.log('LATE started ' .. version) end)");
+        QVERIFY(c.plugins().install(source + "/late", nullptr, nullptr).ok);
+        QCOMPARE(std::count_if(g_logs.cbegin(), g_logs.cend(), [](const QString &line) { return line.contains("LATE started 0.2.1"); }), 1);
+        c.plugins().manager()->appStarted();
+        QCOMPARE(std::count_if(g_logs.cbegin(), g_logs.cend(), [](const QString &line) { return line.contains("LATE started 0.2.1"); }), 1);
+    }
+
+    void instance_refresh_action_rescans_plugins_without_reload() {
+        Lib l;
+        AppController c(l.opts());
+        c.start(Action::Background);
+        auto *manager = c.plugins().manager();
+        mk(l.dir.filePath("plugins"), "from-cli", {}, "hn.command{id='c',title='C',run=function() end}");
+        QVERIFY(c.handleAction(Action::RefreshPlugins));
+        QCOMPARE(manager->info("from-cli").manifest.id, QString("from-cli"));
+        QCOMPARE(manager->info("from-cli").status, Status::NeedsConsent);
+    }
+
+    void instance_refresh_picks_up_consent_written_by_another_process() {
+        Lib l;
+        AppController c(l.opts());
+        c.start(Action::Background);
+        auto *manager = c.plugins().manager();
+        mk(l.dir.filePath("plugins"), "cli-installed", {}, "hn.command{id='c',title='C',run=function() end}");
+        QVERIFY(c.handleAction(Action::RefreshPlugins));
+        QCOMPARE(manager->info("cli-installed").status, Status::NeedsConsent);
+        // what `--install-plugin` does from a separate process: consent + enable in plugins.json
+        {
+            hn::plugins::TrustStore ts(l.state + "/plugins.json");
+            ts.load();
+            QVERIFY(ts.recordConsent("cli-installed", manager->info("cli-installed").manifest.permissions, manager->info("cli-installed").hash));
+            QString why;
+            QVERIFY2(ts.setEnabled("cli-installed", true, &why), qPrintable(why));
+        }
+        QVERIFY(c.handleAction(Action::RefreshPlugins));
+        QVERIFY2(manager->info("cli-installed").consented, "refresh must re-read the trust store");
+        QCOMPARE(manager->info("cli-installed").status, Status::Enabled);
     }
 
     // ---------------------------------------------------------------- consent flow
@@ -628,6 +679,32 @@ end }
         req.allowedHosts = {"api.example.com"};
         req.url = "https://api.example.com/x";
         // (no outbound request is made in tests; a refusal path is enough here)
+    }
+
+    void destroying_bridge_with_pending_reply_returns_cancellation() {
+        Server srv;
+        auto *net = new PluginNetBridge;
+        net->setValidator([](const QUrl &, const QStringList &, QString *) { return true; });
+        HttpRequest req;
+        req.method = "GET";
+        req.url = srv.base() + "/pending";
+        req.timeoutMs = 3000;
+        bool destroyed = false;
+        srv.onPendingReply = [&] {
+            QTimer::singleShot(0, [&] {
+                delete net;
+                net = nullptr;
+                destroyed = true;
+            });
+        };
+
+        const auto response = net->perform(req);
+        QVERIFY(destroyed); // server sent headers + partial body before teardown was requested
+        QVERIFY(net == nullptr);
+        QCOMPARE(srv.hits, 1);
+        QCOMPARE(response.status, 0);
+        QCOMPARE(response.error, QStringLiteral("request cancelled"));
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
     }
 
     // ---------------------------------------------------------------- events / pre_save
@@ -1102,7 +1179,7 @@ hn.command{ id = "steal", title = "Steal", key = "Ctrl+B", run = function() end 
         QTest::mouseClick(page->button("enable"), Qt::LeftButton);
         QCOMPARE(page->statusText("api-probe"), QString("ENABLED"));
         QVERIFY(page->button("disable") && !page->button("enable"));
-        // settings from hn.setting, only while enabled
+        // settings from hn.setting
         page->select("hello");
         QCOMPARE(page->statusText("hello"), QString("NEEDS CONSENT"));   // installed while the dialog was declined
         QTest::mouseClick(page->button("enable"), Qt::LeftButton);
@@ -1119,12 +1196,21 @@ hn.command{ id = "steal", title = "Steal", key = "Ctrl+B", run = function() end 
         greet->setText("Howdy");
         greet->editingFinished();
         QCOMPARE(c.plugins().manager()->host()->setting("hello", "greeting").toString(), QString("Howdy"));
+        auto *session = c.openSticky("a.md");
+        session->editor()->visualEdit()->moveCursor(QTextCursor::End);
+        typeText(session, " ::hello");
+        QVERIFY(plain(session).endsWith("Howdy"));
         // reload (developer), disable, audit log, remove
         QTest::mouseClick(page->button("reload"), Qt::LeftButton);
         QCOMPARE(page->statusText("hello"), QString("ENABLED"));
         QTest::mouseClick(page->button("disable"), Qt::LeftButton);
         QCOMPARE(page->statusText("hello"), QString("DISABLED"));
-        QCOMPARE(page->settingEditors().size(), 0);
+        QCOMPARE(page->settingEditors().size(), 2);
+        greet = qobject_cast<QLineEdit *>(page->settingEditors()[0]);
+        QVERIFY(greet);
+        greet->setText("Disabled edit");
+        greet->editingFinished();
+        QCOMPARE(c.plugins().manager()->host()->setting("hello", "greeting").toString(), QString("Disabled edit"));
         page->showAudit("hello");
         auto *audit = dlg.findChild<QDialog *>("hnAuditDialog");
         QVERIFY(audit);

@@ -1,0 +1,53 @@
+# ThreadSanitizer suppressions. tests/sanitize/run.sh runs TSan with ignore_interceptors_accesses=1 together with this file.
+#
+# ignore_interceptors_accesses=1 (an option, not a suppression): the system Qt, glib, libdbus and libc are not built with TSan. Qt hands
+# QString/QList buffers between threads with reference counts and queues it implements itself, and TSan cannot see those happens-before
+# edges, so a worker freeing a QStringList that the main thread allocated is reported as a race (about 400 reports in the suite; every one
+# was such a copy-on-write handoff through malloc/free/memmove, none a Hyprnotes data structure). The option drops the accesses made by
+# the malloc/free/mem* interceptors and keeps every access made by instrumented code: plain fields, atomics, std containers and
+# QString members touched by Hyprnotes code are still checked (a seeded race on an int and a std::string is still reported with these
+# options). Known blind spots, stated precisely: the option drops ALL accesses made by the libc/libtsan mem*/str*/malloc/free interceptors,
+# wherever they are called from. So (1) a race that exists only as concurrent memcpy/memmove of one buffer is not seen, and (2) a Hyprnotes
+# thread reading a shared QString/QList/QByteArray through instrumented inline code while another thread mutates the same buffer inside
+# uninstrumented Qt code (a copy-on-write detach, a realloc) is invisible, because the conflicting access is made by Qt/an interceptor.
+# Shared Qt containers between threads therefore have to be reviewed by hand; TSan only covers plain fields, atomics, mutex discipline and
+# std containers.
+# (ignore_noninstrumented_modules=1 was tried first and rejected: it also hides pthread_join from Qt and makes TSan abort with
+# "CHECK failed: sanitizer_thread_registry.cpp:186" when a pthread_t is reused.)
+#
+# Everything else is listed below, each with its reason.
+
+# Library: Qt Core (QThreadPool workers, QtTest watchdog, QDBusConnection and QNetworkAccessManager helper threads).
+# Reason: these threads are created by Qt, finish normally and are reaped by Qt at process exit; TSan reports a finished thread that nobody
+# joined as a "thread leak". It would equally hide a never-joined QThread created by Hyprnotes code; there is none: src/ creates no QThread,
+# QThreadPool or QtConcurrent task (its only thread is std::thread in core::Worker, which this entry does not match), and run.sh tsan
+# fails if a grep finds one, so this stays true. The QThreadPool users are tests (IoTest, market tests).
+thread:QThread::start
+
+# Library: libdbus-1 (used by QtDBus for the tray icon and the autostart portal).
+# Reason: libdbus takes its connection and server locks in both orders on different internal paths; the cycle is entirely inside libdbus
+# (no Hyprnotes frame holds either mutex) and libdbus avoids the deadlock with its own dispatch-status protocol, which TSan cannot see.
+deadlock:libdbus-1.so.3
+
+# The next two entries only matter when Qt itself is built with ThreadSanitizer (the instrumented-Qt run in docs/testing.md); the stock
+# Qt is uninstrumented, so these frames are never visible there. Each is an upstream Qt 6.12.0 defect, reproduced by Qt-only code (no
+# Hyprnotes source) in tests/sanitize/tsan_controls/ and checked by tests/sanitize/tsan-controls.sh: without the entry the Qt-only
+# program is reported, with it nothing is, each entry is shown to match (print_suppressions), and Hyprnotes-style races (an int, a
+# std::string, and a lambda-capture destructor run by disconnect) are still reported. Independent review: only these two entries
+# are needed; broader ones (deleteOrphaned, which runs user lambda-capture destructors) hid real application races and were rejected.
+# Blind spot, stated precisely: a Hyprnotes race that is ALSO a connect()-versus-emit of one sender from two threads (the reader
+# maybeSignalConnected is the leaf of every emit), or a race against ~QHttpThreadDelegate (runs on the QNetworkAccessManager thread,
+# no Hyprnotes code), would be hidden. src/ creates no QThread and emits every signal on the thread that owns the sender (core::Worker
+# uses std::thread and never emits a signal from it); run.sh tsan keeps grepping for QThread use.
+# Separate, not caused by these entries: with ignore_interceptors_accesses=1, TSan does not see accesses made on QThread::create threads
+# (a std::thread race is reported either way); only tests use such threads.
+
+# Library: Qt Core (qobject.cpp). QObjectPrivate::maybeSignalConnected() relaxed-loads the signal vector before taking a reference to
+# ConnectionData while connect() on the same sender replaces (resizeSignalVector) or frees (deleteOrphaned) it. Matched on the reader only.
+race:QObjectPrivate::maybeSignalConnected*
+
+# Library: Qt Network (qhttpthreaddelegate.cpp, qnetworkreply.cpp). The QNetworkAccessManager helper thread destroys the
+# QHttpThreadDelegate (a QObject whose connections point at the reply) while the main thread destroys the QNetworkReply: vptr
+# ctor/dtor-versus-virtual-call and ~QObject connection-list reports between the two destructors, entirely inside Qt. Matched on the
+# delegate's destructor only.
+race:QHttpThreadDelegate::~QHttpThreadDelegate

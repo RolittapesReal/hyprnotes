@@ -21,7 +21,7 @@ class PluginService;
 class PluginNoteBridge : public hn::plugins::NoteBridge {
 public:
     explicit PluginNoteBridge(NoteSession *s) : m_s(s) {}
-    ~PluginNoteBridge() override { endTransaction(); }
+    ~PluginNoteBridge() override { PluginNoteBridge::endTransaction(); }   // not virtual dispatch: derived parts are already gone
     void detach() { endTransaction(); m_s = nullptr; }
     NoteSession *session() const { return m_s.data(); }
     QString text() override;

@@ -25,6 +25,20 @@ class ThemeAppTest : public QObject {
 private slots:
     void init() { qputenv("XDG_CONFIG_HOME", xdg.filePath("xdg").toUtf8()); QDir(xdg.filePath("xdg")).removeRecursively(); }
 
+    void trayIconTracksColorScheme() {
+        Lib l;
+        auto options = l.opts();
+        options.useTray = true;
+        AppController c(options);
+        QVERIFY(c.tray());
+        const QImage before = c.tray()->icon().pixmap(QSize(32, 32)).toImage();
+        auto settings = c.settings();
+        settings.colorScheme = settings.colorScheme == "dark" ? "light" : "dark";
+        c.applySettings(settings, c.prefs());
+        const QImage after = c.tray()->icon().pixmap(QSize(32, 32)).toImage();
+        QVERIFY2(before != after, "tray icon pixels should follow active color scheme");
+    }
+
     void picker_lists_imports_applies_and_persists() {
         Lib l;
         AppController c(l.opts());
@@ -70,10 +84,9 @@ private slots:
             m->setUrls({QUrl::fromLocalFile(path)});
             QDropEvent e(QPointF(5, 5), Qt::CopyAction, m, Qt::LeftButton, Qt::NoModifier);
             w->show();
-            QDragEnterEvent en(QPoint(5, 5), Qt::CopyAction, m, Qt::LeftButton, Qt::NoModifier);
+            QDragEnterEvent en(QPointF(5, 5), Qt::CopyAction, m, Qt::LeftButton, Qt::NoModifier);
             QApplication::sendEvent(w, &en);
-            if (!en.isAccepted()) return;   // a non-theme file is refused at drag-enter
-            QApplication::sendEvent(w, &e);
+            if (en.isAccepted()) QApplication::sendEvent(w, &e);   // a non-theme file is refused at drag-enter
             delete m;
         };
         drop(&dlg, file("d.json"));

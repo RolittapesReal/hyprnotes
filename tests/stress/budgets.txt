@@ -1,0 +1,69 @@
+# name value unit; strict original budgets are immutable.
+# W1/W10/edit/search values below come from approved Task 7 baseline contract.
+app.W1.pss 28.5 MiB
+app.W10.pss 64.6 MiB
+app.idle.cpu 0.0 %
+editor.20k.editing.p95 0.89 ms
+index.1000.search.p95 17.7 ms
+index.10000.search.p95 46 ms
+# Additive budgets are appended only from non-QUICK measured runs (1.25x).
+# Task 7b full 100k library measurements (2026-10-09).
+scale.library.fixture_generation 1929.205 ms
+scale.startup.library100000.cold.p95 953.954 ms
+scale.startup.library100000.warm.p95 965.186 ms
+scale.library.index_build 60837.838 ms
+scale.library.index_pss 133.791 MiB
+scale.library.index_pss_delta 50.806 MiB
+scale.library.query0.p95 13.783 ms
+scale.library.query1.p95 164.745 ms
+scale.library.query2.p95 15.398 ms
+scale.library.query3.p95 628.536 ms
+scale.library.query4.p95 0.730 ms
+scale.library.query5.p95 1826.369 ms
+scale.library.query6.p95 137.828 ms
+scale.library.query7.p95 129.513 ms
+scale.library.query8.p95 0.805 ms
+scale.library.query9.p95 120.471 ms
+scale.library.rename_delete_create.p95 0.039 ms
+scale.library.watcher_burst_write 64.249 ms
+# Task 7b full window scale. PSS curve <=2 MiB remains an independent strict assertion.
+scale.windows.10.open.p95 66.896 ms
+scale.windows.10.pss_total 69.831 MiB
+scale.windows.10.pss_per_window 6.985 MiB
+scale.windows.10.cycle_open.p95 7.018 ms
+scale.windows.10.cycle_close.p95 0.946 ms
+scale.windows.10.close.p95 1.231 ms
+scale.windows.50.open.p95 12.339 ms
+scale.windows.50.pss_total 164.143 MiB
+scale.windows.50.pss_per_window 3.284 MiB
+scale.windows.50.cycle_open.p95 8.949 ms
+scale.windows.50.cycle_close.p95 1.101 ms
+scale.windows.50.close.p95 1.555 ms
+scale.windows.100.open.p95 13.360 ms
+scale.windows.100.pss_total 310.210 MiB
+scale.windows.100.pss_per_window 3.103 MiB
+scale.windows.100.cycle_open.p95 15.338 ms
+scale.windows.100.cycle_close.p95 2.025 ms
+scale.windows.100.close.p95 3.014 ms
+scale.windows.200.open.p95 30.081 ms
+scale.windows.200.pss_total 568.579 MiB
+scale.windows.200.pss_per_window 2.843 MiB
+scale.windows.200.cycle_open.p95 34.333 ms
+scale.windows.200.cycle_close.p95 3.835 ms
+scale.windows.200.close.p95 7.466 ms
+# Task 7b full editor/large-input, 10k-list and official-plugin measurements.
+scale.big.1MiB.save 8.505 ms
+scale.big.5MiB.save 8.474 ms
+scale.big.20MiB.save 40.028 ms
+scale.pathological.100k_line.save 0.730 ms
+scale.pathological.1m_line.save 3.769 ms
+scale.pathological.100k_lines.save 1.358 ms
+scale.pathological.10MiB_table.save 17.443 ms
+scale.pathological.5000_nested.save 39.163 ms
+editor.5m.load_pss_delta 114.190 MiB
+scale.editor.list10k_import.p95 130.875 ms
+scale.official_plugins.typing20k.p95 0.850 ms
+# Context-switch based idle proxy from one full 60s sample; CPU exact-zero gates remain unchanged.
+scale.wakeups.1.per_second 0.084 wakeups/s
+scale.wakeups.10.per_second 0.125 wakeups/s
+scale.wakeups.100.per_second 0.063 wakeups/s

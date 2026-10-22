@@ -1,0 +1,2 @@
+# Exact repository-relative file paths, followed by a tab and a reason.
+# No product files are excluded initially; generated moc/autogen sources are not product sources.

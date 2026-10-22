@@ -379,6 +379,8 @@ void PanelDock::rebuild() {
     m_overflow->menu()->clear();
     for (const auto &tab : ts) {
         auto *action = m_overflow->menu()->addAction(tab.second);
+        if (auto *hub = m_c->plugins().hub())
+            if (const auto *panel = hub->find(tab.first); panel && !panel->icon.isEmpty()) action->setIcon(ui::icon(panel->icon, ui::theme().text, 16));
         action->setCheckable(true); action->setData(tab.first);
         connect(action, &QAction::triggered, this, [this, id = tab.first] { setCurrentPanel(id); });
     }
@@ -451,10 +453,12 @@ void PanelDock::layoutTabs() {
     int needed = 0;
     QList<int> widths;
     for (const auto &tab : ts) {
+        const auto *panel = m_c->plugins().hub() ? m_c->plugins().hub()->find(tab.first) : nullptr;
+        const bool hasIcon = panel && !panel->icon.isEmpty() && !ui::icon(panel->icon, ui::theme().text, 16).isNull();
         QTextLayout layout(tab.second.toUpper(), tabFont());
         layout.beginLayout(); auto line = layout.createLine();
         if (line.isValid()) line.setLineWidth(100000);
-        const int w = (line.isValid() ? qCeil(line.naturalTextWidth()) : 0) + 24;
+        const int w = (line.isValid() ? qCeil(line.naturalTextWidth()) : 0) + 24 + (hasIcon ? 20 : 0);
         layout.endLayout(); widths << w; needed += w;
     }
     const bool overflow = needed > right - left;
@@ -513,7 +517,14 @@ void PanelDock::paintEvent(QPaintEvent *) {
         if (i == m_hoverTab && !cur) p.fillRect(r, t.selection);
         p.setPen(cur ? t.text : t.muted);
         const QFont f = tabFont();
-        p.drawText(r.adjusted(12, 0, -12, 0), Qt::AlignVCenter | Qt::AlignLeft, QFontMetrics(f).elidedText(ts[i].second.toUpper(), Qt::ElideRight, r.width() - 24));
+        int textLeft = 12;
+        if (auto *hub = m_c->plugins().hub()) {
+            if (const auto *panel = hub->find(ts[i].first); panel && !panel->icon.isEmpty()) {
+                const QIcon ic = ui::icon(panel->icon, cur ? t.text : t.muted, 14);
+                if (!ic.isNull()) { ic.paint(&p, QRect(r.left() + 10, (header - 14) / 2, 14, 14)); textLeft = 30; }
+            }
+        }
+        p.drawText(r.adjusted(textLeft, 0, -12, 0), Qt::AlignVCenter | Qt::AlignLeft, QFontMetrics(f).elidedText(ts[i].second.toUpper(), Qt::ElideRight, r.width() - textLeft - 12));
         if (cur) p.fillRect(QRect(r.left(), header - 3, r.width(), 3), t.accent);
     }
     if (!m_popup && m_dragX >= 0) p.fillRect(QRect(0, 0, 3, height()), t.accent);

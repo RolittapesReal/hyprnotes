@@ -53,7 +53,7 @@ class DocsTest : public QObject {
 private slots:
     void everyLuaBlockRunsAsAPlugin() {
         int n = 0, commands = 0, triggers = 0, events = 0, apiTwo = 0, panels = 0, completions = 0, links = 0;
-        for (const QString &doc : {"plugins.md", "plugin-api.md"}) {
+        for (const QString &doc : QStringList{"plugins.md", "plugin-api.md"}) {
             for (const auto &f : fences(doc)) {
                 if (f.lang != "lua") continue;
                 const QString where = QString("%1:%2").arg(f.file).arg(f.line);
@@ -118,7 +118,7 @@ private slots:
 
     void jsonBlocksAreValidAndManifestsParse() {
         int manifests = 0, json = 0;
-        for (const QString &doc : {"plugins.md", "plugin-api.md"})
+        for (const QString &doc : QStringList{"plugins.md", "plugin-api.md"})
             for (const auto &f : fences(doc)) {
                 if (f.lang != "json") continue;
                 const QString where = QString("%1:%2").arg(f.file).arg(f.line);
@@ -212,12 +212,12 @@ end }
 
     void linksAndAnchorsResolve() {
         QMap<QString, QSet<QString>> anchors;
-        for (const QString &doc : {"plugins.md", "plugin-api.md"})
+        for (const QString &doc : QStringList{"plugins.md", "plugin-api.md"})
             for (const auto &line : readText(docPath(doc)).split('\n'))
                 if (line.startsWith('#')) { QString h = line; while (h.startsWith('#')) h.remove(0, 1); anchors[doc].insert(slug(h.trimmed().remove('`'))); }
         static const QRegularExpression link(QStringLiteral("\\]\\(([^)\\s]+)\\)"));
         int checked = 0;
-        for (const QString &doc : {"plugins.md", "plugin-api.md"}) {
+        for (const QString &doc : QStringList{"plugins.md", "plugin-api.md"}) {
             auto it = link.globalMatch(readText(docPath(doc)));
             while (it.hasNext()) {
                 const QString t = it.next().captured(1);

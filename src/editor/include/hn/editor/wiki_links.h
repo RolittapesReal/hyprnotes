@@ -7,7 +7,7 @@
 
 namespace hn::editor {
 
-enum class LinkState { Resolved, Unresolved, Ambiguous };
+enum class LinkState { Resolved, Unresolved, Ambiguous, Unknown };
 
 // One `[[target]]`, `[[target|alias]]`, `[[target#anchor]]` or `![[target]]` as seen by the user.
 struct LinkRefInfo {
@@ -16,7 +16,7 @@ struct LinkRefInfo {
     QString target;    // trimmed text before '#'/'|'
     QString alias;     // text after the first '|', trimmed ("" if none)
     QString anchor;    // text after '#' in the target part, trimmed ("" if none)
-    int line = 1;      // 1-based. Source mode: the line of the opening "[[". Visual mode: block index + 1 (blocks are not lines).
+    int line = 1;      // 1-based document line containing opening "[[".
     bool operator==(const LinkRefInfo &) const = default;
 };
 

@@ -1,0 +1,1 @@
+{"id":"good-id","name":"Test good-id","version":"1.0.0","author":"tests","description":"test plugin","api":1,"tier":"script","entry":"main.lua","permissions":["ui","network"],"net_hosts":["api.example.com"],"min_app":"0.1.0"}

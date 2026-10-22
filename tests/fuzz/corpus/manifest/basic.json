@@ -1,0 +1,1 @@
+{"id":"sample-plugin","name":"Sample","version":"1.0.0","api":2,"entry":"main.lua","permissions":["note.read"]}

@@ -13,7 +13,7 @@ struct RecoveryStore::Hist {
     std::mutex mu;
     bool scanned = false;
     qint64 total = 0;
-    std::deque<std::pair<QString, qint64>> entries; // oldest first (path, bytes)
+    std::deque<std::pair<QString, qint64>> entries; // oldest first (directory name under resolved/, bytes); a full path per entry cost ~4x the memory
 };
 
 RecoveryStore::RecoveryStore(QString dir, qint64 cap) : m_hist(std::make_shared<Hist>()), m_dir(std::move(dir)), m_cap(cap) {}
@@ -63,7 +63,7 @@ void RecoveryStore::resolve(const QString &root, const QString &rel) const {
     {
         const qint64 n = dirBytes(target);
         std::lock_guard g(m_hist->mu);
-        if (m_hist->scanned) { m_hist->entries.emplace_back(target, n); m_hist->total += n; }
+        if (m_hist->scanned) { m_hist->entries.emplace_back(QFileInfo(target).fileName(), n); m_hist->total += n; }
     }
     prune();
 }
@@ -99,6 +99,8 @@ static qint64 dirBytes(const QString &d) {
     return n;
 }
 
+size_t RecoveryStore::historyEntries() const { std::lock_guard g(m_hist->mu); return m_hist->entries.size(); }
+
 qint64 RecoveryStore::resolvedBytes() const { return dirBytes(m_dir + "/resolved"); }
 
 void RecoveryStore::prune() const {
@@ -107,13 +109,15 @@ void RecoveryStore::prune() const {
     if (!h.scanned) { // first use: one full walk. Names start with the epoch msec, so Name order == oldest first.
         h.total = 0;
         for (const auto &d : QDir(m_dir + "/resolved").entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
-            h.entries.emplace_back(d.filePath(), dirBytes(d.filePath()));
+            h.entries.emplace_back(d.fileName(), dirBytes(d.filePath()));
             h.total += h.entries.back().second;
         }
         h.scanned = true;
     }
-    while (!h.entries.empty() && h.total > m_cap) {
-        QDir(h.entries.front().first).removeRecursively();
+    // Evict oldest first beyond the byte cap and beyond the entry cap: tiny entries would otherwise cost more memory and directories
+    // than bytes (64 MiB of 100-byte saves is 600k directories).
+    while (!h.entries.empty() && (h.total > m_cap || h.entries.size() > kMaxHistoryEntries)) {
+        QDir(m_dir + "/resolved/" + h.entries.front().first).removeRecursively();
         h.total -= h.entries.front().second;
         h.entries.pop_front();
     }

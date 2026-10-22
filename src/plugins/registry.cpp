@@ -53,11 +53,17 @@ PluginRegs PluginRegs::fromJson(const QString &p, const QJsonObject &o) {
 
 void PluginRegistry::set(const QString &id, const PluginRegs &r) {
     if (auto it = m_.find(id); it != m_.end() && *it == r) return;
+    disabledSettings_.remove(id);
     m_[id] = r;
     emit changed();
 }
-void PluginRegistry::remove(const QString &id) { if (m_.remove(id)) emit changed(); }
-void PluginRegistry::clear() { if (!m_.isEmpty()) { m_.clear(); emit changed(); } }
+void PluginRegistry::setDisabledSettings(const QString &id, const QList<SettingReg> &settings) {
+    if (settings.isEmpty()) { if (disabledSettings_.remove(id)) emit changed(); return; }
+    disabledSettings_[id] = settings;
+    emit changed();
+}
+void PluginRegistry::remove(const QString &id) { if (m_.remove(id) || disabledSettings_.remove(id)) emit changed(); }
+void PluginRegistry::clear() { if (!m_.isEmpty() || !disabledSettings_.isEmpty()) { m_.clear(); disabledSettings_.clear(); emit changed(); } }
 const PluginRegs *PluginRegistry::of(const QString &id) const { auto it = m_.constFind(id); return it == m_.constEnd() ? nullptr : &*it; }
 QList<CommandReg> PluginRegistry::commands() const { QList<CommandReg> r; for (const auto &x : m_) r += x.commands; return r; }
 QList<ToolbarReg> PluginRegistry::toolbarButtons() const { QList<ToolbarReg> r; for (const auto &x : m_) r += x.toolbars; return r; }
@@ -70,6 +76,7 @@ QList<TriggerReg> PluginRegistry::triggers() const { QList<TriggerReg> r; for (c
 QList<SettingReg> PluginRegistry::settings(const QString &id) const {
     QList<SettingReg> r;
     for (auto it = m_.begin(); it != m_.end(); ++it) if (id.isEmpty() || it.key() == id) r += it->settings;
+    for (auto it = disabledSettings_.begin(); it != disabledSettings_.end(); ++it) if (id.isEmpty() || it.key() == id) r += it.value();
     return r;
 }
 QStringList PluginRegistry::subscribers(const QString &event) const {

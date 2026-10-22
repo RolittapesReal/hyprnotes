@@ -85,7 +85,7 @@ void applyInline(QTextCharFormat &f, InlineStyle k, bool on, const QString &mono
 
 void modifyRange(QTextDocument *doc, int from, int to, const std::function<void(QTextCharFormat &)> &fn)
 {
-    struct R { int a, b; QTextCharFormat f; };
+    struct R { int a = 0, b = 0; QTextCharFormat f; };
     QList<R> rs;
     for (QTextBlock b = doc->findBlock(from); b.isValid() && b.position() < to; b = b.next())
         for (auto it = b.begin(); !it.atEnd(); ++it) {
@@ -490,6 +490,7 @@ void VisualEdit::inputMethodEvent(QInputMethodEvent *e)
     auto s = m_rec->begin(TxKind::Typing, edits ? WindowMode::Wide : WindowMode::Selection);
     QTextEdit::inputMethodEvent(e);
     if (edits) healRules();
+    if (edits && e->preeditString().isEmpty() && !textCursor().hasSelection() && afterTyping) afterTyping();
 }
 
 // ---- horizontal rules -------------------------------------------------------------------------
@@ -918,7 +919,7 @@ void VisualEdit::normalizeRange(int b0, int b1)
                 QTextCursor(b).setBlockCharFormat(cf);
             }
         }
-        struct R { int a, e; QTextCharFormat f; };
+        struct R { int a = 0, e = 0; QTextCharFormat f; };
         QList<R> rs;
         for (auto it = b.begin(); !it.atEnd(); ++it) {
             const QTextFragment fr = it.fragment();
@@ -990,6 +991,7 @@ void SourceEdit::inputMethodEvent(QInputMethodEvent *e)
     const bool edits = !e->commitString().isEmpty() || e->replacementLength() != 0;
     auto s = m_rec->begin(TxKind::Typing, edits ? WindowMode::Wide : WindowMode::Selection);
     QPlainTextEdit::inputMethodEvent(e);
+    if (edits && e->preeditString().isEmpty() && !textCursor().hasSelection() && afterTyping) afterTyping();
 }
 
 void SourceEdit::insertFromMimeData(const QMimeData *src)

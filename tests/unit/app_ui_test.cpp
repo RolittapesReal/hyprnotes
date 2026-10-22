@@ -1,7 +1,13 @@
 #include "app_test_util.h"
 #include "tag_edit.h"
+#include "hn/core/worker.h"
+#include <QDateTime>
 #include <QLineEdit>
 #include <QListView>
+#include <QSemaphore>
+#include <QScrollBar>
+#include <QTimeZone>
+#include <memory>
 
 using namespace apptest;
 using hn::platform::Action;
@@ -9,6 +15,41 @@ using hn::platform::Action;
 static void fill(Lib &l, int n, const QString &prefix = "note") {
     for (int i = 0; i < n; ++i) l.write(QString("%1-%2.md").arg(prefix).arg(i, 4, 10, QChar('0')), QString("# %1 %2\n\nbody number %2 alpha\n").arg(prefix).arg(i).toUtf8());
 }
+
+static void writeAt(Lib &l, const QString &rel, qint64 mtimeMs) {
+    l.write(rel, "# fixture\n\nbody\n");
+    QFile f(l.notes + "/" + rel);
+    QVERIFY(f.open(QIODevice::ReadWrite));
+    QVERIFY(f.setFileTime(QDateTime::fromMSecsSinceEpoch(mtimeMs, QTimeZone::UTC), QFileDevice::FileModificationTime));
+}
+
+class IndexSearchDequeueGate {
+    struct State { QSemaphore entered, release; };
+    std::shared_ptr<State> m_state = std::make_shared<State>();
+    bool m_enteredSeen = false;
+    bool m_opened = false;
+public:
+    IndexSearchDequeueGate() {
+        const auto state = m_state;
+        hn::core::Worker::shared().setBeforeDequeueHookForTest(
+            hn::core::Worker::Index, QStringLiteral("search:"), [state] {
+                state->entered.release();
+                state->release.acquire();
+            });
+    }
+    ~IndexSearchDequeueGate() {
+        open();
+        hn::core::Worker::shared().clearBeforeDequeueHookForTest();
+    }
+    bool takeEntered() {
+        if (m_enteredSeen) return true;
+        if (m_state->entered.tryAcquire()) m_enteredSeen = true;
+        return m_enteredSeen;
+    }
+    void open() {
+        if (!m_opened) { m_opened = true; m_state->release.release(); }
+    }
+};
 
 class UiTest : public QObject {
     Q_OBJECT
@@ -51,20 +92,116 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(o->model()->rowCount(), 31, 3000);
     }
 
+    void organizerRefreshRebasesBeforePostSyncFetch() {
+        Lib l; fill(l, 240);
+        constexpr qint64 oldMtime = 1700000000000LL;
+        constexpr qint64 newMtime = oldMtime + 60000;
+        for (int i = 0; i < 240; ++i)
+            writeAt(l, QString("note-%1.md").arg(i, 4, 10, QChar('0')), oldMtime);
+
+        AppController c(l.opts());
+        auto *idx = c.index();
+        QSignalSpy syncs(idx, &hn::core::LibraryIndex::synced);
+        QSignalSpy pages(idx, &hn::core::LibraryIndex::searchFinished);
+        c.showOrganizer();
+        auto *o = c.organizer();
+        QTRY_COMPARE_WITH_TIMEOUT(syncs.count(), 1, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(pages.count() >= 2, 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(o->model()->rowCount(), 100, 5000);
+
+        QSignalSpy fetches(o->model(), &NoteListModel::fetchRequested);
+        auto *bar = o->list()->verticalScrollBar();
+        bar->setValue(bar->maximum() - 1);
+        bar->setValue(bar->maximum());
+        QTRY_COMPARE_WITH_TIMEOUT(o->model()->rowCount(), 200, 5000);
+        QCOMPARE(fetches.count(), 1);
+        QCOMPARE(fetches.first().at(0).toInt(), 100);
+        hn::core::Worker::shared().waitIdle();
+
+        // This controlled sync is the only post-fixture change.
+        QObject::disconnect(&c.repo(), &hn::core::NoteRepository::libraryChanged, idx, nullptr);
+        for (int i = 0; i < 40; ++i)
+            writeAt(l, QString("new-%1.md").arg(i, 3, 10, QChar('0')), newMtime);
+        const int pagesBeforeGeneration = pages.count();
+        const int searchesBeforeGeneration = o->searchCount();
+        QSignalSpy generationSync(idx, &hn::core::LibraryIndex::synced);
+
+        // Hold a queued search after synchronous rail work has completed, so another
+        // same-key search can replace it before the worker dequeues it.
+        IndexSearchDequeueGate searchGate;
+        const quint64 generation = idx->sync();
+        QTRY_COMPARE_WITH_TIMEOUT(generationSync.count(), 1, 5000);
+        QCOMPARE(generationSync.first().at(0).toULongLong(), generation);
+        QCOMPARE(generationSync.first().at(1).toInt(), 40);
+
+        QTRY_VERIFY_WITH_TIMEOUT(searchGate.takeEntered(), 5000);
+        QCOMPARE(o->searchCount(), searchesBeforeGeneration + 1);
+
+        // A real scrollbar fetch supersedes the queued refresh through the same key.
+        bar->setValue(bar->maximum() - 1);
+        bar->setValue(bar->maximum());
+        QTRY_COMPARE_WITH_TIMEOUT(fetches.count(), 2, 3000);
+        QCOMPARE(fetches.last().at(0).toInt(), 200);
+        QCOMPARE(o->searchCount(), searchesBeforeGeneration + 2);
+
+        searchGate.open();
+        QTRY_VERIFY_WITH_TIMEOUT(pages.count() > pagesBeforeGeneration, 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(o->model()->rowCount(), 280, 5000);
+
+        const auto canonical = idx->searchNow({.limit = 500, .offset = 0});
+        QCOMPARE(canonical.rows.size(), 280);
+        QStringList actual;
+        for (int row = 0; row < o->model()->rowCount(); ++row)
+            actual << o->model()->index(row).data(NoteListModel::RelRole).toString();
+        QSet<QString> unique;
+        for (const auto &path : actual) unique.insert(path);
+        QStringList expectedPrefix;
+        for (qsizetype i = 0; i < actual.size() && i < canonical.rows.size(); ++i)
+            expectedPrefix << canonical.rows.at(i).relPath;
+        const bool canonicalPrefix = actual == expectedPrefix && actual.size() <= canonical.rows.size();
+        QVERIFY2(unique.size() == actual.size() && canonicalPrefix,
+                 qPrintable(QString("loaded=%1 unique=%2 canonical-prefix=%3")
+                                .arg(actual.size()).arg(unique.size())
+                                .arg(canonicalPrefix ? QStringLiteral("true") : QStringLiteral("false"))));
+    }
+
     void pagination_100_and_row_cache_cap_500() {
         Lib l; fill(l, 620);
         AppController c(l.opts());
+        QSignalSpy syncs(c.index(), &hn::core::LibraryIndex::synced);
+        QSignalSpy pages(c.index(), &hn::core::LibraryIndex::searchFinished);
         c.showOrganizer();
         auto *o = c.organizer();
         QTRY_COMPARE_WITH_TIMEOUT(o->model()->rowCount(), 100, 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(syncs.count(), 1, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(o->searchCount() >= 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(pages.count() >= 2, 5000);
+        QCOMPARE(o->model()->rowCount(), 100);
         for (int want = 200; want <= 500; want += 100) {
-            QVERIFY(o->model()->canFetchMore({}));
-            o->model()->fetchMore({});
-            QTRY_COMPARE_WITH_TIMEOUT(o->model()->rowCount(), want, 5000);
+            // The real path: the user scrolls the list to its end and QListView itself asks the model for the next page (QAbstractItemView
+            // fetches when the scroll bar sits at its maximum). A debounced refresh from the index sync that is still running can supersede
+            // a fetch in flight and resets the model (scroll position back to the top), so the user scrolls to the end again, as here.
+            QTRY_VERIFY_WITH_TIMEOUT((o->list()->verticalScrollBar()->setValue(o->list()->verticalScrollBar()->maximum()), o->model()->rowCount() >= want), 15000);
+            QCOMPARE(o->model()->rowCount(), want);
         }
         QVERIFY(!o->model()->canFetchMore({}));               // never more than 500 rows held
         QVERIFY(o->model()->truncated());
         QVERIFY(c.index()->cachedRows() <= 500);
+
+        const auto canonical = c.index()->searchNow({.limit = 500, .offset = 0});
+        QStringList actual;
+        for (int row = 0; row < o->model()->rowCount(); ++row)
+            actual << o->model()->index(row).data(NoteListModel::RelRole).toString();
+        QSet<QString> unique;
+        for (const auto &path : actual) unique.insert(path);
+        QStringList expectedPrefix;
+        for (qsizetype i = 0; i < actual.size() && i < canonical.rows.size(); ++i)
+            expectedPrefix << canonical.rows.at(i).relPath;
+        const bool canonicalPrefix = actual == expectedPrefix && actual.size() <= canonical.rows.size();
+        QVERIFY2(unique.size() == actual.size() && canonicalPrefix,
+                 qPrintable(QString("loaded=%1 unique=%2 canonical-prefix=%3")
+                                .arg(actual.size()).arg(unique.size())
+                                .arg(canonicalPrefix ? QStringLiteral("true") : QStringLiteral("false"))));
     }
 
     void organizer_list_shows_titles_tags_and_opens_notes() {

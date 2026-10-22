@@ -24,6 +24,15 @@ private slots:
     QVERIFY(ok); QCOMPARE(m[0].rect, QRect(0, 0, 1920, 1080));   // 3840/scale 2
     QCOMPARE(m[0].workArea(), QRect(0, 38, 1920, 1042));
     HyprlandIpc::parseClients("garbage", 1, &ok); QVERIFY(!ok);
+    HyprEventLine event;
+    QVERIFY(parseHyprEventLine("workspace>>3", &event));
+    QCOMPARE(event.name, QString("workspace")); QCOMPARE(event.data, QString("3")); QVERIFY(event.relevant); QVERIFY(!event.configReloaded);
+    QVERIFY(parseHyprEventLine("configreloaded>>", &event)); QVERIFY(event.relevant); QVERIFY(event.configReloaded);
+    QVERIFY(parseHyprEventLine("submap>>x", &event)); QVERIFY(!event.relevant);
+    QVERIFY(!parseHyprEventLine("missing separator", &event));
+    QVERIFY(!parseHyprEventLine(QByteArray("openwindow>>\xff", 13), &event));
+    QVERIFY(!parseHyprEventLine("bad event name>>payload", &event));
+    QVERIFY(!parseHyprEventLine(QByteArray(1024 * 1024 + 1, 'x') + ">>", &event));
   }
   void queriesAndDispatchAgainstFake() {
     FakeHyprland fake;
@@ -99,7 +108,7 @@ private slots:
     FakeHyprland fake;
     HyprlandIpc ipc(fake.paths()); ipc.start();
     QTRY_VERIFY(ipc.connected()); QTRY_COMPARE(fake.evClients.size(), 1);
-    QSignalSpy raw(&ipc, &HyprlandIpc::event), st(&ipc, &HyprlandIpc::stateChanged), rel(&ipc, &HyprlandIpc::configReloaded);
+    QSignalSpy raw(&ipc, &HyprlandIpc::rawEvent), st(&ipc, &HyprlandIpc::stateChanged), rel(&ipc, &HyprlandIpc::configReloaded);
     // burst, plus a line split across writes, plus junk and an irrelevant event
     fake.emitEvent("openwindow>>0xabc,1,kitty,t\nwindowtitle>>0xabc\nnot an event\nsubmap>>x\nmovewin");
     QTest::qWait(5);
@@ -111,6 +120,36 @@ private slots:
     QVERIFY(set.contains("openwindow") && set.contains("windowtitle") && set.contains("movewindowv2") && !set.contains("submap"));
     QCOMPARE(rel.size(), 1);
     QTest::qWait(100); QCOMPARE(st.size(), 1);       // nothing else fires while idle
+  }
+  void malformedAndOversizedEventsAreDiscarded() {
+    FakeHyprland fake;
+    HyprlandIpc ipc(fake.paths()); ipc.start();
+    QTRY_VERIFY(ipc.connected()); QTRY_COMPARE(fake.evClients.size(), 1);
+    QSignalSpy raw(&ipc, &HyprlandIpc::rawEvent), state(&ipc, &HyprlandIpc::stateChanged);
+    fake.emitEvent(QByteArray("openwindow>>\xff\n", 14));
+    fake.emitEvent(QByteArray(1024 * 1024 + 1, 'x') + "\n");
+    fake.emitEvent("openwindow>>valid\n");
+    QTRY_COMPARE(raw.size(), 1);
+    QTRY_COMPARE(state.size(), 1);
+    QCOMPARE(raw[0][0].toString(), QString("openwindow"));
+    QCOMPARE(raw[0][1].toString(), QString("valid"));
+  }
+  void oversizedEventDoesNotConsumeFollowingEvent() {
+    FakeHyprland fake;
+    HyprlandIpc ipc(fake.paths()); ipc.start();
+    QTRY_VERIFY(ipc.connected()); QTRY_COMPARE(fake.evClients.size(), 1);
+    QSignalSpy raw(&ipc, &HyprlandIpc::rawEvent);
+
+    fake.emitEvent(QByteArray(1024 * 1024 + 1, 'x') + "\nopenwindow>>same-write\n");
+    QTRY_COMPARE_WITH_TIMEOUT(raw.size(), 1, 3000);
+    QCOMPARE(raw[0][1].toString(), QString("same-write"));
+
+    const int before = raw.size();
+    fake.emitEvent(QByteArray(768 * 1024, 'y'));
+    QTest::qWait(50);
+    fake.emitEvent(QByteArray(300 * 1024, 'y') + "\nopenwindow>>fragmented\n");
+    QTRY_COMPARE_WITH_TIMEOUT(raw.size(), before + 1, 3000);
+    QCOMPARE(raw[before][1].toString(), QString("fragmented"));
   }
   void reconnectInvalidatesAddressesAndReenumerates() {
     FakeHyprland fake;

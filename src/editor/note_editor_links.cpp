@@ -5,6 +5,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextLayout>
@@ -44,6 +45,7 @@ struct NoteEditor::LinksImpl {
     int start = 0, gen = 0;
     QString id, query;
     CompletionPopup *popup = nullptr;
+    QPointer<QWidget> eventWindow;
     int pendingGen = 0;
 };
 
@@ -88,6 +90,12 @@ void NoteEditor::linksRefreshHooks()
 {
     auto &l = *m_l;
     const bool needFilter = l.linksOn || !l.triggers.isEmpty();
+    QWidget *top = window();
+    if (l.eventWindow != top) {
+        if (l.eventWindow) l.eventWindow->removeEventFilter(this);
+        l.eventWindow = needFilter ? top : nullptr;
+        if (l.eventWindow) l.eventWindow->installEventFilter(this);
+    }
     if (needFilter && !l.filterOn) {
         for (QAbstractScrollArea *w : {static_cast<QAbstractScrollArea *>(m_vis), static_cast<QAbstractScrollArea *>(m_src)}) {
             w->installEventFilter(this);
@@ -198,7 +206,7 @@ static const QList<LinkRange> &blockRanges(QTextBlock b, bool vis)
                 const QTextFragment f = it.fragment();
                 if (f.charFormat().fontFixedPitch() || f.charFormat().isAnchor()) skip.append({f.position() - b.position(), f.position() - b.position() + f.length()});
             }
-            c->ranges = scanWikiLinks(text, skip, false, b.blockNumber() + 1);
+            c->ranges = scanWikiLinks(text, skip, false, b.blockNumber() * 2 + 1);
         }
     } else if (!fence && !isFenceLine(text)) {
         c->ranges = scanWikiLinks(text, {}, true, b.blockNumber() + 1);
@@ -323,7 +331,7 @@ void NoteEditor::paintLinks(QPainter &p)
                     pen.setCapStyle(Qt::FlatCap);
                     p.setPen(pen);
                     p.drawLine(x, uy, x + w - 1, uy);
-                } else {   // ambiguous: double underline
+                } else if (st == LinkState::Ambiguous) {
                     p.fillRect(QRect(x, uy - 1, w, 1), t.accent);
                     p.fillRect(QRect(x, uy + 2, w, 1), t.accent);
                 }
@@ -395,6 +403,14 @@ bool NoteEditor::eventFilter(QObject *o, QEvent *e)
         break;
     case QEvent::FocusOut:
         if (o == edit && l.active && (!l.popup || !l.popup->underMouse())) dismissCompletions();
+        break;
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::WindowDeactivate:
+    case QEvent::ApplicationDeactivate:
+    case QEvent::WindowStateChange:
+    case QEvent::ScreenChangeInternal:
+        if (o == l.eventWindow && l.active) dismissCompletions();
         break;
     case QEvent::Wheel:
         if (o == vp && l.active) dismissCompletions();

@@ -17,7 +17,6 @@
 #include <QCloseEvent>
 #include <QFileInfo>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLineEdit>
 #include <QMenu>
@@ -25,7 +24,6 @@
 #include <QPushButton>
 #include <QStackedLayout>
 #include <QVBoxLayout>
-#include "tag_edit.h"
 
 using namespace hn::core;
 
@@ -288,7 +286,10 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     m_refreshTimer.setSingleShot(true);
     m_refreshTimer.setInterval(kDebounceMs);
     connect(&m_debounce, &QTimer::timeout, this, [this] { runSearch(0); });
-    connect(&m_refreshTimer, &QTimer::timeout, this, [this] { rebuildRail(); runSearch(0, true); });   // keeps the pages already loaded
+    connect(&m_refreshTimer, &QTimer::timeout, this, [this] {
+        rebuildRail();
+        runSearch(0, true);
+    });   // a refresh starts a new canonical pagination prefix
     connect(m_search, &QLineEdit::textChanged, this, [this] { m_debounce.start(); });   // coalesces typing; superseded queries never run
     connect(m_model, &NoteListModel::fetchRequested, this, [this](int off) { runSearch(off); });
     connect(delegate, &NoteDelegate::openInWindow, this, [this](const QString &r) { m_c->openSticky(r, true); m_list->viewport()->update(); });
@@ -539,7 +540,11 @@ void OrganizerWindow::focusSearch() {
     m_search->selectAll();
 }
 
-void OrganizerWindow::refresh() { m_refreshTimer.start(); }
+void OrganizerWindow::refresh() {
+    m_rebasePending = true;
+    m_rebaseRequestId = 0;
+    m_refreshTimer.start();
+}
 
 void OrganizerWindow::setFilter(const QString &folder, const QString &tag) {
     m_folder = folder;
@@ -561,15 +566,25 @@ void OrganizerWindow::paintEvent(QPaintEvent *) {
 // ---------------------------------------------------------------- search / list
 void OrganizerWindow::runSearch(int offset, bool keepExtent) {
     auto *idx = m_c->index();
+    const int requestedOffset = offset;
+    const bool rebase = m_rebasePending && offset > 0;
+    if (rebase) {
+        offset = 0;
+        keepExtent = true;
+    }
     IndexQuery q;
     q.text = m_search->text().trimmed();
     q.folder = m_folder;
     q.tag = m_tag;
-    q.limit = keepExtent && offset == 0 ? qBound(int(NoteListModel::kPage), m_model->rowCount(), int(NoteListModel::kMaxRows)) : int(NoteListModel::kPage);
+    const int extent = rebase ? qMax(m_model->rowCount(), requestedOffset + int(NoteListModel::kPage)) : m_model->rowCount();
+    q.limit = keepExtent && offset == 0
+        ? qBound(int(NoteListModel::kPage), extent, int(NoteListModel::kMaxRows))
+        : int(NoteListModel::kPage);
     q.offset = offset;
     ++m_searches;
     m_lastOffset = offset;
     m_lastId = idx->search(q);
+    if (m_rebasePending && offset == 0) m_rebaseRequestId = m_lastId;
 }
 
 // The index only stores snippets for text queries; list rows get a first-lines preview read lazily
@@ -610,7 +625,12 @@ void OrganizerWindow::onPage(const SearchPage &page0) {
         m_previews.insert(key, new QPair<qint64, QString>(r.mtimeMs, r.snippet));
     }
     if (page.id != m_lastId) return;   // superseded
+    if (m_rebasePending && page.id != m_rebaseRequestId) return;
     const bool append = m_lastOffset > 0;
+    if (m_rebasePending && page.id == m_rebaseRequestId && !append && page.error.isEmpty()) {
+        m_rebasePending = false;
+        m_rebaseRequestId = 0;
+    }
     QList<IndexRow> rows = page.rows;
     if (!append) rows = LibraryIndex::mergeDirty(rows, m_c->dirtyDocs(), m_search->text().trimmed());
     if (append) m_model->appendRows(rows, page.hasMore); else m_model->setRows(rows, page.hasMore);
@@ -620,6 +640,13 @@ void OrganizerWindow::onPage(const SearchPage &page0) {
     m_count->setColor(ui::theme().muted);
     m_count->setText(m_model->truncated() ? tr("%1+ NOTES").arg(n) : (n == 1 ? tr("1 NOTE") : tr("%1 NOTES").arg(n)));
     m_total = n;
+    if (!page.error.isEmpty()) {   // never show an unavailable index as "0 NOTES"
+        const bool unavailable = page.error.startsWith(QLatin1String("SQLite")) || page.error.startsWith(QLatin1String("index unavailable"));
+        m_count->setText(unavailable ? tr("SEARCH UNAVAILABLE") : tr("SEARCH FAILED"));
+        m_count->setToolTip(page.error);
+    } else {
+        m_count->setToolTip(QString());
+    }
     syncSelection();
     updateStacks();
 }
@@ -733,21 +760,12 @@ void OrganizerWindow::updateHeader() {
 
 void OrganizerWindow::rename() {
     if (!m_session) return;
-    bool ok = false;
-    const QString cur = QFileInfo(m_session->rel()).completeBaseName();
-    const QString name = QInputDialog::getText(this, tr("Rename note"), tr("File name"), QLineEdit::Normal, cur, &ok);
-    if (!ok) return;
-    QString err;
-    if (!m_c->renameNoteWithLinks(m_session->rel(), name, LinkMode::Ask, &err) && !err.isEmpty()) m_status->flash(err);
+    m_c->promptRename(m_session->rel(), this);
 }
 
 void OrganizerWindow::editTags() {
     if (!m_session) return;
-    bool ok = false;
-    QStringList cur;
-    for (const auto &g : m_session->tags()) cur << "#" + g;
-    const QString text = QInputDialog::getText(this, tr("Edit tags"), tr("Tags are #tokens in the note text, e.g. #work #ideas"), QLineEdit::Normal, cur.join(' '), &ok);
-    if (ok) m_c->editTags(m_session->rel(), parseTagInput(text));
+    m_c->promptEditTags(m_session->rel(), this);
 }
 
 void OrganizerWindow::showMoreMenu() {

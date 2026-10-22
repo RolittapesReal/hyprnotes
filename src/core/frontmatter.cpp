@@ -170,7 +170,7 @@ Frontmatter parseImpl(const QByteArray &bytes) {
     const auto t = fm.fields.value("title");
     if (!t.isList) fm.title = t.scalar().simplified();
     for (const QString &a : fm.fields.value("aliases").items) addUnique(fm.aliases, a.simplified());
-    for (QString raw : fm.fields.value("tags").items) {
+    for (const QString &raw : fm.fields.value("tags").items) {
         // scalar `tags: a, b c` => split on commas/whitespace; inline/block items are taken whole
         QStringList parts = fm.fields.value("tags").isList ? QStringList{raw} : raw.split(QRegularExpression("[,\\s]+"), Qt::SkipEmptyParts);
         for (QString tg : parts) {

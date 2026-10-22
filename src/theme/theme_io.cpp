@@ -90,7 +90,7 @@ bool convertVsCode(const QJsonObject &doc, QJsonObject *out, QString *nameOut, Q
     const QString bg = get({"editor.background"}), fg = get({"editor.foreground"});
     if (bg.isEmpty() || fg.isEmpty()) { *errorOut = "VS Code theme: editor.background and editor.foreground are required"; return false; }
     QJsonObject tok{{"bg", bg}, {"text", fg}};
-    const struct { const char *tok; std::initializer_list<const char *> keys; } m[] = {
+    const struct { const char *tok = nullptr; std::initializer_list<const char *> keys; } m[] = {
         {"selection", {"editor.selectionBackground"}}, {"surface", {"sideBar.background", "editorWidget.background"}},
         {"border", {"panel.border", "editorGroup.border", "contrastBorder"}}, {"muted", {"editorLineNumber.foreground"}},
         {"danger", {"errorForeground"}}, {"accent", {"focusBorder", "button.background"}}};

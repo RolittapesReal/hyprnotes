@@ -127,7 +127,8 @@ public:
     explicit PluginManager(ManagerConfig cfg, QObject *parent = nullptr);
     ~PluginManager() override;
 
-    void scan();  // reads manifests + verifies hashes; creates no Lua state unless an enabled plugin has no registration cache
+    // Returns false (and changes nothing) when a plugin callback is running; the caller must not report a refresh then.
+    bool scan();  // false: refused while a callback runs, or the trust file was unreadable (rescan used the in-memory consent). Reads manifests + verifies hashes; creates no Lua state unless an enabled plugin has no registration cache
     QList<PluginInfo> plugins() const;
     PluginInfo info(const QString &id) const;
     QList<PluginError> errors() const { return errors_; }
@@ -147,7 +148,7 @@ public:
     // note.changed / selection.changed are coalesced; others are delivered immediately. Only subscribed plugins are touched.
     void post(const QString &event, const QString &arg, NoteBridge *note);
     void flushEvents();
-    void appStarted() { post(QStringLiteral("app.started"), cfg_.appVersion, nullptr); }  // call once after scan() when the app is up (arg = app version)
+    void appStarted();
     void detachNote(NoteBridge *note);  // call before a NoteBridge is destroyed
     QString preSave(const QString &text, NoteBridge *note);
     std::optional<TriggerMatch> matchTrigger(const QString &textBeforeCursor, NoteBridge *note);
@@ -185,6 +186,7 @@ private:
     struct Entry { Manifest m; QString hash; QString lastError; bool invalid = false; };
     bool run(const QString &q, LuaPluginHost::Kind k, NoteBridge *note, QString *err);
     void activateEntry(const QString &id, Entry &e);
+    void deliverAppStarted(const QString &id, const Entry &e);
     void loadEntry(const QString &dir, const QString &dirName);
     void saveCache();
     void deliverNow(const QString &event, const QString &arg, NoteBridge *note);
@@ -223,6 +225,8 @@ private:
     bool cacheSuspended_ = false;
     int discoveryDepth_ = 0;
     bool registryPending_ = false, drainScheduled_ = false, drainingPanels_ = false;
+    bool appStarted_ = false;
+    QSet<QString> startedPlugins_;
     int drainCascade_ = 0;  // callbacks run since the deferred queue was last empty
     quint64 nextGeneration_ = 0;
     QHash<QString, quint64> generations_;

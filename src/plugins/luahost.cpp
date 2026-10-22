@@ -1,5 +1,6 @@
 #include "hn/plugins/runtime.h"
 #include "luapattern.h"
+#include <cmath>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -257,7 +258,7 @@ bool toJson(lua_State *L, int idx, int depth, int &nodes, QJsonValue &out, QStri
         if (lua_isinteger(L, idx)) { out = double(lua_tointeger(L, idx)); return true; }
         else {
             const double x = lua_tonumber(L, idx);
-            if (x != x || x - x != 0) { err = QStringLiteral("NaN/infinity cannot be stored"); return false; }
+            if (!std::isfinite(x)) { err = QStringLiteral("NaN/infinity cannot be stored"); return false; }
             out = x;
             return true;
         }
@@ -631,7 +632,7 @@ QJsonValue capJson(const QJsonValue &v, int depth, int &nodes) {  // result of a
         for (auto it = src.begin(); it != src.end(); ++it) { if (nodes > kMaxIdxNodes) break; o.insert(capUtf8(it.key(), 256), capJson(it.value(), depth + 1, nodes)); }
         return o;
     }
-    case QJsonValue::Double: { const double x = v.toDouble(); return (x != x || x - x != 0) ? QJsonValue(QJsonValue::Null) : v; }
+    case QJsonValue::Double: { const double x = v.toDouble(); return !std::isfinite(x) ? QJsonValue(QJsonValue::Null) : v; }
     default: return v;
     }
 }
@@ -669,6 +670,7 @@ int statusResult(lua_State *L, BridgeStatus s, const QString &what = QString()) 
     case BridgeStatus::Unsupported: m = QStringLiteral("unsupported: this host does not provide %1").arg(what.isEmpty() ? QStringLiteral("the call") : what); break;
     case BridgeStatus::Invalid: m = QStringLiteral("invalid request"); break;
     case BridgeStatus::NotFound: m = QStringLiteral("not found"); break;
+    case BridgeStatus::Cancelled: m = QStringLiteral("cancelled"); break;
     case BridgeStatus::Ok: m = QStringLiteral("error"); break;
     }
     lua_pushnil(L);
@@ -1854,7 +1856,7 @@ bool LuaPluginHost::runTrigger(const QString &id, const QString &pattern, NoteBr
 namespace {
 
 struct BlockCtx {
-    PluginState *p;
+    PluginState *p = nullptr;
     QList<int> refs;        // registry refs created for on_click (released again if the render is rejected)
     QHash<int, int> tokens; // token -> ref
     int count = 0;

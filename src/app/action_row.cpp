@@ -83,7 +83,7 @@ void ActionRow::addButton(QPushButton *button) {
 bool ActionRow::hasHeightForWidth() const { return true; }
 int ActionRow::arrange(int width, bool apply) const {
     int x = 0, y = 0, rowH = 0;
-    for (auto button : m_buttons) {
+    for (const auto &button : m_buttons) {
         if (!button || button->isHidden()) continue;
         const int w = qMin(qMax(0, width), button->sizeHint().width());
         const int h = button->hasHeightForWidth() ? button->heightForWidth(w) : button->sizeHint().height();
@@ -96,7 +96,7 @@ int ActionRow::arrange(int width, bool apply) const {
 int ActionRow::heightForWidth(int width) const { return arrange(width, false); }
 QSize ActionRow::sizeHint() const {
     int w = 0;
-    for (auto button : m_buttons) if (button && !button->isHidden()) w += button->sizeHint().width() + 8;
+    for (const auto &button : m_buttons) if (button && !button->isHidden()) w += button->sizeHint().width() + 8;
     w = qMax(0, w - 8); return {w, heightForWidth(w)};
 }
 QSize ActionRow::minimumSizeHint() const { return {0, 0}; }

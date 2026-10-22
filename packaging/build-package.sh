@@ -10,8 +10,8 @@ rm -rf "$out"; mkdir -p "$out/work" "$out/build" "$out/src" "$out/pkg"
 tarball=$out/work/hyprnotes-$ver.tar.gz
 tar -C "$root" --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
     --transform "s,^\.,hyprnotes-$ver," \
-    --exclude='./packaging/out' --exclude='*/__pycache__' \
-    -czf "$tarball" ./CMakeLists.txt ./README.md ./LICENSE ./cmake ./src ./tests/unit ./examples ./docs ./packaging
+    --exclude='./packaging/out' --exclude='./docs/superpowers' --exclude='./docs/benchmarks' --exclude='*/__pycache__' \
+    -czf "$tarball" ./CMakeLists.txt ./README.md ./CHANGELOG.md ./SECURITY.md ./LICENSE ./cmake ./src ./tests/unit ./tests/fuzz ./examples ./docs ./packaging
 sum=$(sha256sum "$tarball" | cut -d' ' -f1)
 sed -e "s/^pkgver=.*/pkgver=$ver/" -e "s/^sha256sums=.*/sha256sums=('$sum')/" "$root/packaging/arch/PKGBUILD" > "$out/work/PKGBUILD"
 cd "$out/work"

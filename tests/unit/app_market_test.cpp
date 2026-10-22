@@ -58,7 +58,7 @@ struct Fx {
         QList<PluginError> errs;
         if (!packDirectory(dir, file, &errs)) qFatal("cannot pack");
         QFile f(file);
-        f.open(QIODevice::ReadOnly);
+        if (!f.open(QIODevice::ReadOnly)) qFatal("cannot open archive");
         return f.readAll();
     }
     MarketEntry add(const QString &id, const QString &version, const QStringList &perms, const QStringList &hosts = {}, const QStringList &tags = {}) {

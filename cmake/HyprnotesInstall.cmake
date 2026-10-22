@@ -17,7 +17,8 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/examples/mods/uppercase-selection DESTIN
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/examples/plugins/ DESTINATION ${_share}/examples/plugins)
 install(FILES ${PROJECT_SOURCE_DIR}/src/mods/include/hyprnotes/mod_api.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hyprnotes)
 
-install(FILES ${PROJECT_SOURCE_DIR}/README.md ${PROJECT_SOURCE_DIR}/docs/install.md
+install(FILES ${PROJECT_SOURCE_DIR}/CHANGELOG.md ${PROJECT_SOURCE_DIR}/SECURITY.md
+              ${PROJECT_SOURCE_DIR}/README.md ${PROJECT_SOURCE_DIR}/docs/install.md
               ${PROJECT_SOURCE_DIR}/docs/mods.md ${PROJECT_SOURCE_DIR}/docs/plugins.md ${PROJECT_SOURCE_DIR}/docs/plugin-api.md ${PROJECT_SOURCE_DIR}/docs/theme-reference.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES ${PROJECT_SOURCE_DIR}/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/hyprnotes)

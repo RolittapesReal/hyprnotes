@@ -1,4 +1,5 @@
 #pragma once
+#include <QTextLayout>
 #include <QWidget>
 #include <functional>
 
@@ -35,6 +36,9 @@ public:
     std::function<void(int)> picked;       // row index clicked
 
 protected:
+    static QList<QTextLayout::FormatRange> highlightFormats(const QString &original, const QString &label,
+                                                             const QString &query, const QColor &accent);
+    bool event(QEvent *event) override;
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *e) override;
     void mouseMoveEvent(QMouseEvent *e) override;

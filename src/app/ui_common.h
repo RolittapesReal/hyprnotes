@@ -34,7 +34,11 @@ ThemeNotifier *themeNotifier();
 void setReducedMotion(bool reduced);
 
 QIcon appIcon();
+QIcon appTrayIcon(const hn::theme::Theme &theme);
 QIcon icon(const QString &name, const QColor &tint = {}, int px = 16);
+QString chooseOpenFile(QWidget *parent, const QString &title, const QString &directory, const QString &filter);
+QString chooseSaveFile(QWidget *parent, const QString &title, const QString &fileName, const QString &filter);
+QString chooseDirectory(QWidget *parent, const QString &title, const QString &directory = {});
 QFont uiFont(int px, int weight = QFont::Normal);
 QFont labelFont(int px = 0);
 QColor noteColor(int index);

@@ -1,7 +1,7 @@
 # Hyprnotes plugin API reference (API versions 1 and 2)
 
-This is the reference for the `hn` table that script plugins (Lua 5.5, sandboxed) receive. For a guided introduction read [plugins.md](plugins.md).
-It is checked against the implementation: an automated test (`plugins_docs_test`) lists every function the sandbox exposes and fails if one is missing here (or documented but missing there), and it **runs every `lua` code block below** as a real plugin against fake bridges.
+Script plugins run Lua 5.5 and receive the `hn` table documented here. For a guided introduction, see [plugins.md](plugins.md).
+The `plugins_docs_test` test checks this reference against the implementation: it compares the documented functions with those exposed by the sandbox, then runs every `lua` code block below as a plugin against fake bridges.
 
 Conventions used in every entry:
 
@@ -15,6 +15,25 @@ Each block is a complete plugin `main.lua`. The first line of its fence says whi
 **API versions.** `plugin.json` declares `"api": 1` or `"api": 2`. Version 1 is the original surface and is unchanged. Version 2 adds the note index (`hn.notes.links/backlinks/resolve/frontmatter/query/open/rename`), panels (`hn.panel`, `hn.panel_refresh`), completion (`hn.complete`) and link handlers (`hn.link_handler`, event `link.activate`), and four permissions: `notes.index`, `ui.panel`, `editor.complete`, `editor.links`. For an `"api": 1` plugin these functions **do not exist** (they are `nil`) and the manifest may not request the new permissions; a version 2 plugin needs a Hyprnotes that supports API 2 (`min_app` says which). Everything below marked *API 2* needs `"api": 2`.
 
 **Soft failures.** The API-2 index calls report problems the plugin can handle as `nil, "<reason>"` instead of raising: `"timeout: index call exceeded 100 ms"`, `"rate limit exceeded"`, `"not found"`, `"unsupported: this host does not provide ..."`. Programming errors (missing permission, bad arguments, an invalid query) raise as usual.
+
+## Behavior notes (12 checks)
+
+These notes describe runtime behavior that signatures alone do not show. They document the current implementation; they do not add API functions.
+
+1. `app.started` is delivered once when a plugin becomes enabled, including when enabled mid-session; callback receives app version. It has no active-note context.
+2. `hn.note.*` outside note context raises `no active note in this context`.
+3. `hn.ui.prompt` and `hn.ui.pick` return `nil` when cancelled; `hn.ui.confirm` returns `false`. Picker success is a 1-based item index.
+4. API-2 index availability/time/rate failures return `nil, err`; missing permission, invalid arguments, and invalid query input raise.
+5. API-2 index calls have 100 ms per-call and 500 ms per-callback bounds, 200 calls/second per plugin, at most 500 rows, and bounded result depth/strings; see [index limits](#the-note-index-hnnotes-api-2).
+6. `hn.notes.query` reads saved/indexed state and does not merge unsaved editor buffers. Edits become visible after autosave and index update, normally within 5 seconds.
+7. `links` and `backlinks` merge dirty open documents; `frontmatter` reads open note's current text. These use different snapshot policies from `query`.
+8. A failed `hn.notes.read` does not prove absence. Follow the documented existence-check sequence before writing; treat any other error as unknown.
+9. `hn.settings.get(id)` reads current setting each call; setting edits affect reads and triggers without Reload when plugin is enabled. Settings remain editable while plugin is disabled and retain their value when re-enabled. Existing registrations are not rebuilt by a setting edit.
+10. Panel icon is shown in dock header/tab and overflow action. Long completion detail elides visually and remains available as plain-text tooltip.
+11. Completion popup dismisses on editor move/resize and top-level deactivation; committed IME input can trigger completion, while composition-only text does not. `LinkRefInfo.line`/link row `line` uses 1-based document line in Visual and Source modes.
+12. Link-updating rename cancellation returns `nil, "cancelled"`; busy/unavailable name resolution stays Unknown and is not cached. CLI `--install-plugin` asks for plugin id; cancellation uninstalls package. On approval it requests `RefreshPlugins`; acknowledged instance rescans without reload, while no-instance install behavior remains unchanged.
+
+For guided installation and trust details, see [plugins.md](plugins.md#quickstart-your-first-plugin-in-5-minutes).
 
 ## Registration
 
@@ -76,7 +95,7 @@ Subscribes `fn` to an event. The function receives one string argument. You may 
 | `note.pre_save` | the note text | may **return** a replacement text; budget 20 ms; any non-string result is ignored |
 | `link.activate` | a link table | *API 2*, needs `editor.links`; see [hn.link_handler](#hnlink_handlerspec) |
 
-Handlers run with a 50 ms budget (20 ms for `note.pre_save`). The active note is available through `hn.note.*` inside note events; `app.started` has no active note. The arguments above are what the runtime hands to your function; which note events the app emits when is up to the app.
+Handlers have a 50 ms budget, except `note.pre_save`, which has 20 ms. Note events provide an active note through `hn.note.*`; `app.started` does not. The event arguments are fixed here, but the app determines when each event is emitted.
 
 Permission: none to subscribe (the calls inside need their own). Errors: `unknown event '...'`, `bad argument #2 (function expected)`, `too many handlers for <event>`.
 
@@ -178,7 +197,7 @@ end }
 
 ## The open note: `hn.note`
 
-These work on the note in the active window. Outside a note context (while `main.lua` loads, in `app.started`) they raise `no active note in this context`. All edits made during one callback form **one undo step**.
+These functions operate on the note in the active window. They raise `no active note in this context` outside a note context, including while `main.lua` loads and during `app.started`. Edits made in one callback form **one undo step**.
 
 ### hn.note.text()
 
@@ -308,11 +327,11 @@ end }
 
 ## The note index: `hn.notes` (API 2)
 
-These read the host's link/frontmatter/task index. They need `"api": 2` and the permission `notes.index` (except `open`, which needs `notes.read`, and `rename`, which needs `notes.write`). Paths are relative note paths as above.
+These functions read the host's link, frontmatter, and task index. They require `"api": 2` and `notes.index`, except `open` (`notes.read`) and `rename` (`notes.write`). Paths use the relative format described above.
 
 Limits for every index call: **100 ms** wall budget per call (the index reports an overrun as a timeout and the runtime discards a result that arrives later), **500 ms** for all index calls of one callback, **200 calls per second** per plugin (`nil, "rate limit exceeded"`; the denial is written to the audit log). Time inside index calls is not charged to your callback budget, but these bounds apply instead. Results are plain Lua tables: at most 500 rows, strings cut at 64 KiB, nesting cut at 6 levels; a result that cannot fit your 16 MiB heap raises `value too large for the plugin memory limit`.
 
-A **link row** is `{ kind = "link" | "embed", target = "b", alias?, anchor?, resolved?, src?, context?, line }`: `target` is what was written inside `[[ ]]` (without alias and anchor), `resolved` the note path it points to (absent when unresolved), `src` the note that contains the link (set by `backlinks`), `context` the surrounding text and `line` the 1-based line. Absent means the key is not in the table.
+A **link row** has the shape `{ kind = "link" | "embed", target = "b", alias?, anchor?, resolved?, src?, context?, line }`. `target` is the text inside `[[ ]]`, without an alias or anchor. `resolved` is the target note path and is absent for unresolved links. `backlinks` also sets `src`, the note containing the link. `context` holds surrounding text; `line` is 1-based. Optional fields are omitted from the table when unavailable.
 
 ### hn.notes.links(path)
 
@@ -412,7 +431,7 @@ end }
 
 ## Panels (API 2)
 
-A panel is a page in the app's side dock. You do not draw it: `render` returns **blocks** and the app draws them (no widgets, no HTML, no scripts). Needs `"api": 2` and the permission `ui.panel`.
+A panel adds a page to the app's side dock. Its `render` function returns **blocks** for the app to draw; plugins cannot supply widgets, HTML, or scripts. Panels require `"api": 2` and `ui.panel`.
 
 ### hn.panel(spec)
 
@@ -530,7 +549,7 @@ end)
 
 ## Dialogs: `hn.ui`
 
-All need permission `ui`. The blocking calls (`prompt`, `confirm`, `pick`) show a dialog and wait; the waiting time is **not** charged to your callback budget, but the app stays busy until the user answers, so use them sparingly. Calling one from a `note.changed` handler is a good way to annoy people.
+All dialog functions require `ui`. `prompt`, `confirm`, and `pick` wait for a response; that wait does not count against the callback budget, but the app remains busy. Use them sparingly, especially in frequently emitted handlers such as `note.changed`.
 
 ### hn.ui.notify(message)
 
@@ -633,7 +652,7 @@ end }
 
 ## Network: `hn.http`
 
-Permission `network` (dangerous) **and** the host must be listed in `plugin.json` `"net_hosts"`. The URL must be `https://`, with no user name or password, on the default port, and the host must match a `net_hosts` entry exactly. Redirects to any other host (or to `http`) must be refused by the host application. Limits: URL 2048 characters, request body 256 KiB, response body 1 MiB, 10 s timeout, 20 requests per minute per plugin (over the limit the call returns `nil, "rate limit exceeded"`), at most 8 request headers (names `A-Za-z0-9-` up to 40 characters, values up to 512 without line breaks; `Host`, `Content-Length`, `Connection`, `Transfer-Encoding` and `Cookie` are refused). Time spent waiting does not count against the callback budget. The audit log records the host only, never the URL path or the body.
+Network calls require the dangerous `network` permission, and each destination host must appear in `plugin.json` under `"net_hosts"`. URLs must use `https://`, omit credentials, use the default port, and match a listed host exactly. The host application must refuse redirects to another host or to `http`. Limits: URL 2048 characters, request body 256 KiB, response body 1 MiB, 10 s timeout, 20 requests per minute per plugin (over the limit the call returns `nil, "rate limit exceeded"`), at most 8 request headers (names `A-Za-z0-9-` up to 40 characters, values up to 512 without line breaks; `Host`, `Content-Length`, `Connection`, `Transfer-Encoding` and `Cookie` are refused). Network wait time does not count against the callback budget. The audit log records the host, not the URL path or body.
 
 Both functions return a table `{ status = <number>, body = <string>, ok = <true for 2xx> }` or `nil, "<error message>"` (timeout, connection error, response too large).
 

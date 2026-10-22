@@ -48,7 +48,7 @@ int EditorHooks::stateFor(NoteSession *s, const QString &target, QString *resolv
     if (st != BridgeStatus::Ok) {   // index busy or unavailable: show it as resolved (neutral), do not cache, look again shortly
         invalidate();
         if (resolvedPath) resolvedPath->clear();
-        return int(LinkState::Resolved);
+        return int(LinkState::Unknown);
     }
     const int state = rr.status == QLatin1String("resolved") ? int(LinkState::Resolved) : rr.status == QLatin1String("ambiguous") ? int(LinkState::Ambiguous) : int(LinkState::Unresolved);
     m_cache.insert(key, {state, rr.path});

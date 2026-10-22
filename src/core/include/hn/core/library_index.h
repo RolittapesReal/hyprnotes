@@ -35,7 +35,10 @@ struct SearchPage {
     quint64 id = 0;
     QList<IndexRow> rows;
     bool hasMore = false;
+    QString error;   // non-empty: the index could not run the search (never an empty result list pretending otherwise)
 };
+// Minimum SQLite the index SQL needs (WITH ... AS MATERIALIZED): 3.35.0. Parses "3.46.1"-style text.
+bool sqliteVersionSupported(const QString &version);
 struct DirtyDoc { QString relPath; QString text; };
 
 // ---- link graph / tasks (schema v2) ----

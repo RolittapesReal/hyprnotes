@@ -221,6 +221,7 @@ void StickyWindow::updateChip() {
 }
 
 void StickyWindow::refreshTitle() {
+    if (!m_session || !m_header || !m_header->title) return;
     const QString t = m_session->title();
     m_header->title->setText(t.isEmpty() ? tr("Untitled") : t);
     m_header->title->setTextFont(ui::uiFont(13, QFont::Bold));
@@ -266,11 +267,13 @@ void StickyWindow::mousePressEvent(QMouseEvent *e) {
 
 void StickyWindow::resizeEvent(QResizeEvent *e) {
     QWidget::resizeEvent(e);
+    if (m_popup) { m_popup->close(); m_popup = nullptr; }
     updateChip();
     if (isVisible()) m_c->stickyGeometryChanged(m_session->rel());
 }
 void StickyWindow::moveEvent(QMoveEvent *e) {
     QWidget::moveEvent(e);
+    if (m_popup) { m_popup->close(); m_popup = nullptr; }
     if (isVisible()) m_c->stickyGeometryChanged(m_session->rel());
 }
 

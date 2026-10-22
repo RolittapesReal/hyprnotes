@@ -13,7 +13,7 @@ namespace {
 enum class T { Text, Int, Bool };
 struct Field {
     QString expr; // SQL expression (no binds)
-    T type;
+    T type = T::Text;
     bool nullable = false;
 };
 struct Source {
@@ -49,12 +49,12 @@ QString typeName(T t) { return t == T::Text ? "a string" : t == T::Int ? "a numb
 
 struct Builder {
     QString src;
-    const Source *S;
+    const Source *S = nullptr;
     QString err;
     QVariantList binds;
 
     // Resolve a field into (expression-building info). kind: 0 plain, 1 tag, 2 meta.
-    struct Ref { int kind = 0; Field f; QString metaKey; };
+    struct Ref { int kind = 0; Field f = {}; QString metaKey; };
     bool ref(const QString &name, Ref *r) {
         if (name.size() > 80) { err = "field name too long"; return false; }
         if (src == "notes") {
@@ -306,8 +306,8 @@ int authorizer(void *, int action, const char *a1, const char *a2, const char *,
 
 struct Budget {
     QElapsedTimer timer;
-    const std::atomic<quint64> *latest;
-    quint64 id;
+    const std::atomic<quint64> *latest = nullptr;
+    quint64 id = 0;
     bool cancelled = false, timedOut = false;
 };
 int progress(void *u) {

@@ -291,7 +291,7 @@ results[#results + 1] = tostring(big:find('zzz'))
         QVERIFY(isHostAllowed("HTTPS://API.Example.COM:443/x", h));
         for (const char *bad : {"http://api.example.com/x", "https://evil.example.com/x", "https://api.example.com.evil.com/x", "https://evil.com/?h=api.example.com",
                                 "https://user:pw@api.example.com/x", "https://api.example.com:8443/x", "//api.example.com/x", "/relative", "ftp://api.example.com/",
-                                "https://api.example.com\@evil.com/", "https://127.0.0.1/", "", "https://api.example.com/a b"})
+                                "https://api.example.com\\@evil.com/", "https://api.example.com@evil.com/", "https://127.0.0.1/", "", "https://api.example.com/a b"})
             QVERIFY2(!isHostAllowed(bad, h), bad);
         QVERIFY(!isHostAllowed("https://api.example.com/x", {}));
 
@@ -299,7 +299,7 @@ results[#results + 1] = tostring(big:find('zzz'))
         Rig r;
         QVERIFY(r.addLua("starter", {}, "hn.on('app.started', function(v) hn.log('started ' .. v) end)\n"));
         r.mgr->appStarted();
-        QCOMPARE(r.logsOf("starter"), QStringList{"started 0.2.0"});
+        QCOMPARE(r.logsOf("starter"), QStringList{"started 0.2.1"});
         Rig quiet;
         quiet.mgr->appStarted();
         QCOMPARE(quiet.mgr->loadedStates(), 0);

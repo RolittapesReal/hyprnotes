@@ -23,6 +23,7 @@
 #include <QNetworkCookie>
 #include <QNetworkCookieJar>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QNetworkReply>
 #include <QPushButton>
 #include <QTextCursor>
@@ -288,8 +289,9 @@ BridgeStatus PluginLibraryBridge::rename(const QString &path, const QString &new
     if (title.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive)) title.chop(3);
     QString err, np;
     // update_links = true: the app shows the user the files that would change and asks (Update links / Rename only / Cancel).
-    // Cancel (or any failure) leaves everything as it was and is reported as Invalid.
-    if (!m_c->renameNoteWithLinks(path, title, updateLinks ? LinkMode::Ask : LinkMode::None, &err, &np)) return BridgeStatus::Invalid;
+    // Cancel leaves everything as it was and is reported as Cancelled; every other failure is Invalid.
+    if (!m_c->renameNoteWithLinks(path, title, updateLinks ? LinkMode::Ask : LinkMode::None, &err, &np))
+        return updateLinks && err.isEmpty() && m_c->lastLinkReport().cancelled ? BridgeStatus::Cancelled : BridgeStatus::Invalid;
     if (newPath) *newPath = np;
     return BridgeStatus::Ok;
 }
@@ -378,6 +380,7 @@ std::optional<QString> PluginUiBridge::prompt(const QString &pluginId, const QSt
     l->setTextFormat(Qt::PlainText);
     l->setWordWrap(true);
     auto *e = new QLineEdit(def, &d);
+    e->setAccessibleName(label);
     e->setMinimumHeight(32);
     d.body->addWidget(l);
     d.body->addWidget(e);
@@ -401,6 +404,7 @@ int PluginUiBridge::pick(const QString &pluginId, const QString &title, const QS
     if (m_s->hooks().pick) return m_s->hooks().pick(m_s->nameOf(pluginId), title, items);
     FlatDialog d(QApplication::activeWindow(), m_s->nameOf(pluginId), title, QObject::tr("Select"), true);
     auto *list = new QListWidget(&d);
+    list->setAccessibleName(title);
     list->addItems(items);
     if (!items.isEmpty()) list->setCurrentRow(0);
     list->setMinimumHeight(qMin(240, 28 * int(items.size()) + 8));
@@ -449,6 +453,7 @@ QNetworkAccessManager *PluginNetBridge::nam() {
 
 HttpResponse PluginNetBridge::perform(const HttpRequest &req) {
     HttpResponse res;
+    const auto validate = m_validate;
     QUrl url(req.url, QUrl::StrictMode);
     QString method = req.method.toUpper();
     QByteArray body = req.body;
@@ -456,7 +461,7 @@ HttpResponse PluginNetBridge::perform(const HttpRequest &req) {
     total.start();
     for (int hop = 0; hop <= kMaxRedirects; ++hop) {
         QString why;
-        if (!url.isValid() || !m_validate(url, req.allowedHosts, &why)) {
+        if (!url.isValid() || !validate(url, req.allowedHosts, &why)) {
             res.error = hop == 0 ? (why.isEmpty() ? QStringLiteral("invalid URL") : why)
                                  : QStringLiteral("redirect refused (%1)").arg(why.isEmpty() ? QStringLiteral("invalid target") : why);
             res.status = 0;
@@ -474,28 +479,51 @@ HttpResponse PluginNetBridge::perform(const HttpRequest &req) {
         nr.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
         nr.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Hyprnotes-plugin/") + QString::fromLatin1(kAppVersion));
         for (const auto &h : req.headers) nr.setRawHeader(h.first.toLatin1(), h.second.toLatin1());
-        QNetworkReply *rep = method == QLatin1String("GET") ? nam()->get(nr)
-                           : method == QLatin1String("POST") ? nam()->post(nr, body)
-                           : nam()->sendCustomRequest(nr, method.toLatin1(), body);
+        QPointer<QNetworkAccessManager> manager = nam();
+        QNetworkReply *rawReply = method == QLatin1String("GET") ? manager->get(nr)
+                                : method == QLatin1String("POST") ? manager->post(nr, body)
+                                : manager->sendCustomRequest(nr, method.toLatin1(), body);
+        QPointer<QNetworkReply> rep = rawReply;
         QByteArray data;
         bool tooBig = false, timedOut = false;
         QEventLoop loop;
         QTimer timer;
         timer.setSingleShot(true);
         auto drain = [&] {
+            if (!rep) return;
             if (rep->isOpen()) data += rep->readAll();
             if (data.size() > req.maxResponseBytes && !tooBig) { tooBig = true; rep->abort(); }
         };
-        QObject::connect(rep, &QNetworkReply::readyRead, &loop, drain);
-        QObject::connect(rep, &QNetworkReply::downloadProgress, &loop, [&](qint64 got, qint64 tot) {
-            if ((got > req.maxResponseBytes || tot > req.maxResponseBytes) && !tooBig) { tooBig = true; rep->abort(); }
+        QObject::connect(rawReply, &QNetworkReply::readyRead, &loop, drain);
+        QObject::connect(rawReply, &QNetworkReply::downloadProgress, &loop, [&](qint64 got, qint64 tot) {
+            if ((got > req.maxResponseBytes || tot > req.maxResponseBytes) && !tooBig) {
+                tooBig = true;
+                if (rep) rep->abort();
+            }
         });
-        QObject::connect(rep, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        QObject::connect(&timer, &QTimer::timeout, &loop, [&] { timedOut = true; rep->abort(); });
+        QObject::connect(rawReply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QObject::connect(rawReply, &QObject::destroyed, &loop, &QEventLoop::quit);
+        QObject::connect(manager, &QObject::destroyed, &loop, &QEventLoop::quit);
+        QObject::connect(&timer, &QTimer::timeout, &loop, [&] {
+            timedOut = true;
+            if (rep) rep->abort();
+        });
         timer.start(int(left));
         loop.exec(QEventLoop::ExcludeUserInputEvents);
         timer.stop();
+        if (!manager || !rep) {
+            res.error = QStringLiteral("request cancelled");
+            res.status = 0;
+            res.body.clear();
+            return res;
+        }
         drain();
+        if (!manager || !rep) {
+            res.error = QStringLiteral("request cancelled");
+            res.status = 0;
+            res.body.clear();
+            return res;
+        }
         const int status = rep->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QVariant loc = rep->header(QNetworkRequest::LocationHeader);
         const QString errStr = rep->errorString();

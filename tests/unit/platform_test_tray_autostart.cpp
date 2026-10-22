@@ -74,6 +74,19 @@ private slots:
     QCOMPARE(Autostart::defaultDir(), QString("/x/cfg/autostart"));
     QCOMPARE(Autostart().filePath(), QString("/x/cfg/autostart/hyprnotes.desktop"));
   }
+  void existingUnwritableAutostartDirReportsWriteFailure() {
+    if (::geteuid() == 0) QSKIP("root ignores permissions");
+    QTemporaryDir d;
+    QVERIFY(QFile::setPermissions(d.path(), QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    Autostart a(d.path());
+    const auto result = a.enable();
+    const bool restored = QFile::setPermissions(d.path(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    QVERIFY(restored);
+    QVERIFY(!result.ok);
+    QCOMPARE(result.state, Autostart::State::Off);
+    QVERIFY(result.message.contains("Cannot write"));
+    QVERIFY(!QFile::exists(a.filePath()));
+  }
 };
 QTEST_MAIN(TrayAutostartTest)
 #include "platform_test_tray_autostart.moc"

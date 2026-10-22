@@ -11,21 +11,26 @@
 #include <QDropEvent>
 #include <QMessageBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDialogButtonBox>
-#include <QFileDialog>
+#include <QEvent>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QKeySequenceEdit>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScreen>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTimer>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <QWindow>
 
 using namespace hn::theme;
 
@@ -33,13 +38,6 @@ namespace hn::app {
 
 namespace {
 class FirstRunDialog : public QDialog {
-protected:
-    bool event(QEvent *event) override {
-        const bool handled = QDialog::event(event);
-        if (layout() && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize))
-            setMinimumHeight(layout()->totalHeightForWidth(width()));
-        return handled;
-    }
 };
 
 QLabel *section(const QString &t, QWidget *p) {
@@ -86,11 +84,19 @@ QString runFirstRunDialog(const QString &suggested) {
     outer->addStretch(1);
     outer->addWidget(card, 100);
     outer->addStretch(1);
-    auto *l = new QVBoxLayout(card);
-    l->setContentsMargins(32, 32, 32, 24);
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(32, 24, 32, 24);
+    cardLayout->setSpacing(8);
+    auto *scroll = new QScrollArea(card);
+    scroll->setAccessibleName(QObject::tr("Notes folder setup"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *content = new QWidget;
+    auto *l = new QVBoxLayout(content);
+    l->setContentsMargins(0, 0, 0, 0);
     l->setSpacing(8);
-    l->addStretch(1);   // keep the content compact and centered when a tiling compositor stretches the dialog
-    auto *h = new QLabel(QObject::tr("Where should your notes live?"), &d);
+    auto *h = new QLabel(QObject::tr("Where should your notes live?"), content);
     h->setProperty("hnRole", "heading");
     h->setWordWrap(true);
     const auto restyle = [h] {
@@ -99,29 +105,31 @@ QString runFirstRunDialog(const QString &suggested) {
     restyle();
     QObject::connect(ui::themeNotifier(), &ui::ThemeNotifier::changed, &d, restyle);
     l->addWidget(h);
-    l->addWidget(hint(QObject::tr("Notes are plain Markdown files in a folder you control, so any sync tool or Git can manage them."), &d));
+    l->addWidget(hint(QObject::tr("Notes are plain Markdown files in a folder you control, so any sync tool or Git can manage them."), content));
     l->addSpacing(16);
     auto *row = new QHBoxLayout;
-    auto *edit = new QLineEdit(suggested, &d);
+    auto *edit = new QLineEdit(suggested, content);
+    edit->setAccessibleName(QObject::tr("Notes folder"));
     edit->setMinimumWidth(0);
-    auto *browse = new QPushButton(QObject::tr("Browse…"), &d);
+    auto *browse = new QPushButton(QObject::tr("Browse…"), content);
     row->addWidget(edit, 1);
     row->addWidget(browse);
     l->addLayout(row);
     l->addSpacing(16);
-    l->addWidget(hint(QObject::tr("Closing this dialog uses the default notes folder."), &d));
-    auto *box = new ui::ActionRow(&d);
-    auto *close = new ui::WrappingButton(QObject::tr("Close"), &d);
+    l->addWidget(hint(QObject::tr("Closing this dialog uses the default notes folder."), content));
+    scroll->setWidget(content);
+    cardLayout->addWidget(scroll, 1);
+    auto *box = new ui::ActionRow(card);
+    auto *close = new ui::WrappingButton(QObject::tr("Close"), card);
     close->setObjectName("hnFirstRunClose");
-    auto *ok = new ui::WrappingButton(QObject::tr("Use this folder"), &d);
+    auto *ok = new ui::WrappingButton(QObject::tr("Use this folder"), card);
     box->addButton(close);
     box->addButton(ok);
     ok->setProperty("hnRole", "primary");
     ok->setDefault(true);
-    l->addWidget(box);
-    l->addStretch(1);
+    cardLayout->addWidget(box);
     QObject::connect(browse, &QPushButton::clicked, &d, [&] {
-        const QString p = QFileDialog::getExistingDirectory(&d, QObject::tr("Notes folder"), edit->text());
+        const QString p = ui::chooseDirectory(&d, QObject::tr("Notes folder"), edit->text());
         if (!p.isEmpty()) edit->setText(p);
     });
     QObject::connect(ok, &QPushButton::clicked, &d, &QDialog::accept);
@@ -144,12 +152,16 @@ SettingsDialog::SettingsDialog(AppController *c, QWidget *parent) : QDialog(pare
     title->setContentsMargins(24, 16, 24, 8);
     lay->addWidget(title);
     m_tabs = new QTabWidget(this);
+    m_tabs->setAccessibleName(tr("Settings pages"));
     m_tabs->addTab(tabAppearance(), tr("Appearance"));
     m_tabs->addTab(tabNotes(), tr("Notes"));
     m_tabs->addTab(tabBehavior(), tr("Behavior"));
     m_pluginsPage = new PluginsPage(m_c, this);   // lists plugins and migrated mods; its manager is created on first show
     m_tabs->addTab(m_pluginsPage, tr("Plugins"));
     m_tabs->addTab(tabKeys(), tr("Keys"));
+    for (int i = 0; i < m_tabs->count(); ++i)
+        if (auto *scroll = qobject_cast<QScrollArea *>(m_tabs->widget(i)))
+            scroll->setAccessibleName(tr("%1 settings").arg(m_tabs->tabText(i)));
     lay->addWidget(m_tabs);
     m_note = new QLabel(this);
     m_note->setContentsMargins(24, 0, 24, 0);
@@ -169,6 +181,45 @@ SettingsDialog::SettingsDialog(AppController *c, QWidget *parent) : QDialog(pare
     lay->addWidget(footer);
     connect(m_c, &AppController::themeChanged, this, &SettingsDialog::syncAppearanceFromController);
     m_loading = false;
+}
+
+bool SettingsDialog::event(QEvent *event) {
+    const bool handled = QDialog::event(event);
+    if (event->type() == QEvent::ScreenChangeInternal || event->type() == QEvent::LayoutRequest)
+        fitAvailableScreen();
+    return handled;
+}
+
+void SettingsDialog::showEvent(QShowEvent *event) {
+    QDialog::showEvent(event);
+    fitAvailableScreen();
+}
+
+void SettingsDialog::fitAvailableScreen() {
+    if (m_fittingScreen || !screen()) return;
+    m_fittingScreen = true;
+    if (m_screen != screen()) {
+        disconnect(m_screenGeometryConnection);
+        m_screen = screen();
+        m_screenGeometryConnection = connect(screen(), &QScreen::availableGeometryChanged, this,
+                                               [this] { fitAvailableScreen(); });
+    }
+    const QRect available = screen()->availableGeometry();
+    if (available.isEmpty()) { m_fittingScreen = false; return; }
+    QSize clientArea = available.size();
+    if (windowHandle()) {
+        const QMargins frame = windowHandle()->frameMargins();
+        clientArea -= QSize(frame.left() + frame.right(), frame.top() + frame.bottom());
+    }
+    clientArea = clientArea.expandedTo(QSize(1, 1));
+    setMinimumSize(qMin(520, clientArea.width()), qMin(460, clientArea.height()));
+    setMaximumSize(clientArea);
+    resize(qMin(width(), clientArea.width()), qMin(height(), clientArea.height()));
+    const QRect frame = frameGeometry();
+    const int x = qBound(available.left(), frame.x(), qMax(available.left(), available.right() + 1 - frame.width()));
+    const int y = qBound(available.top(), frame.y(), qMax(available.top(), available.bottom() + 1 - frame.height()));
+    if (frame.topLeft() != QPoint(x, y)) move(x, y);
+    m_fittingScreen = false;
 }
 
 QWidget *SettingsDialog::tabAppearance() {
@@ -197,6 +248,8 @@ QWidget *SettingsDialog::tabAppearance() {
     l->addSpacing(16);
     l->addWidget(section(tr("TEXT SIZE"), w));
     m_font = new QSpinBox(w);
+    m_font->setAccessibleName(tr("Text size in pixels"));
+    m_font->findChild<QLineEdit *>()->setAccessibleName(tr("Text size in pixels"));
     m_font->setRange(8, 32);
     m_font->setSuffix(tr(" px"));
     m_font->setValue(m_c->theme().baseSize);
@@ -230,15 +283,19 @@ QWidget *SettingsDialog::tabAppearance() {
         apply();
     });
     connect(imp, &QPushButton::clicked, this, [this] {
-        const QString p = QFileDialog::getOpenFileName(this, tr("Import theme"), QString(), tr("Themes (*.json *.yaml *.yml)"));
+        const QString p = ui::chooseOpenFile(this, tr("Import theme"), QString(), tr("Themes (*.json *.yaml *.yml)"));
         if (!p.isEmpty()) importThemeFile(p);
     });
     connect(exp, &QPushButton::clicked, this, [this] {
-        const QString p = QFileDialog::getSaveFileName(this, tr("Export theme"), m_theme->currentText() + ".json", tr("Theme (*.json)"));
+        const QString p = ui::chooseSaveFile(this, tr("Export theme"), m_theme->currentText() + ".json", tr("Theme (*.json)"));
         if (!p.isEmpty()) exportThemeTo(p);
     });
     connect(m_removeTheme, &QPushButton::clicked, this, [this] {
-        if (QMessageBox::question(this, tr("Remove theme"), tr("Delete the theme \"%1\"?").arg(m_theme->currentText())) == QMessageBox::Yes) removeSelectedTheme();
+        QMessageBox box(QMessageBox::Question, tr("Remove theme"),
+            tr("Delete the theme \"%1\"?").arg(m_theme->currentText()), QMessageBox::Yes | QMessageBox::No, this);
+        box.setDefaultButton(QMessageBox::No);
+        box.setEscapeButton(box.button(QMessageBox::No));
+        if (box.exec() == QMessageBox::Yes) removeSelectedTheme();
     });
     connect(m_scheme, &QComboBox::currentIndexChanged, this, [this] { apply(); });
     connect(m_font, &QSpinBox::valueChanged, this, [this] { apply(true); });
@@ -252,6 +309,7 @@ QWidget *SettingsDialog::tabNotes() {
     l->addWidget(section(tr("NOTES FOLDER"), w));
     auto *row = new QHBoxLayout;
     m_folder = new QLineEdit(m_c->notesRoot(), w);
+    m_folder->setAccessibleName(tr("Notes folder"));
     auto *browse = new QPushButton(tr("Browse…"), w);
     row->addWidget(m_folder, 1);
     row->addWidget(browse);
@@ -260,7 +318,7 @@ QWidget *SettingsDialog::tabNotes() {
     l->addStretch(1);
     connect(m_folder, &QLineEdit::editingFinished, this, [this] { apply(); });
     connect(browse, &QPushButton::clicked, this, [this] {
-        const QString p = QFileDialog::getExistingDirectory(this, tr("Notes folder"), m_folder->text());
+        const QString p = ui::chooseDirectory(this, tr("Notes folder"), m_folder->text());
         if (!p.isEmpty()) { m_folder->setText(p); apply(); }
     });
     return scrollPage(w);
@@ -306,6 +364,7 @@ QWidget *SettingsDialog::tabKeys() {
     auto *w = page(&l, this);
     l->setContentsMargins(16, 8, 16, 8);
     m_keys = new QTableWidget(0, 2, w);
+    m_keys->setAccessibleName(tr("Keyboard shortcuts"));
     m_keys->installEventFilter(this);
     m_keys->setHorizontalHeaderLabels({tr("Action"), tr("Shortcut")});
     m_keys->verticalHeader()->hide();
@@ -323,6 +382,8 @@ QWidget *SettingsDialog::tabKeys() {
         name->setFlags(Qt::ItemIsEnabled);
         m_keys->setItem(r, 0, name);
         auto *ed = new QKeySequenceEdit(ks, m_keys);   // few fixed rows: acceptable, unlike the note list
+        ed->setAccessibleName(label);
+        ed->findChild<QLineEdit *>()->setAccessibleName(label);
         ed->setMaximumSequenceLength(1);
         ed->installEventFilter(this);
         m_keys->setCellWidget(r, 1, ed);
@@ -366,6 +427,13 @@ void SettingsDialog::resizeKeyRows() {
 }
 
 bool SettingsDialog::eventFilter(QObject *watched, QEvent *event) {
+    if (auto *editor = qobject_cast<QKeySequenceEdit *>(watched); editor && event->type() == QEvent::KeyPress) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+            focusNextPrevChild(key->key() != Qt::Key_Backtab && !key->modifiers().testFlag(Qt::ShiftModifier));
+            return true;
+        }
+    }
     if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange || event->type() == QEvent::Show) {
         // Theme notification precedes sliced QSS/font polish. Measure after the editors receive it.
         if (!m_keysResizePending) {

@@ -1,5 +1,6 @@
 #include "cli.h"
 #include "policy.h"
+#include "hn/platform/instance_transport.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -38,6 +39,19 @@ class CliTest : public QObject {
         return p.exitCode();
     }
 private slots:
+    void plugin_refresh_uses_existing_instance_transport_action() {
+        QTemporaryDir d;
+        const QString endpoint = d.path() + "/instance.sock";
+        hn::platform::InstanceServer server(endpoint);
+        hn::platform::Action received = hn::platform::Action::Background;
+        server.setHandler([&](hn::platform::Action action) { received = action; return true; });
+        QString error;
+        QCOMPARE(server.listen(&error), hn::platform::InstanceServer::Result::Listening);
+        const auto result = hn::platform::sendAction(hn::platform::Action::RefreshPlugins, endpoint);
+        QCOMPARE(result.status, hn::platform::ClientResult::Status::Acked);
+        QCOMPARE(received, hn::platform::Action::RefreshPlugins);
+    }
+
     void parse_options() {
         QCOMPARE(parseCli({}).action, Action::ShowOrganizer);
         QCOMPARE(parseCli({"--new-note"}).action, Action::NewNote);
@@ -55,7 +69,7 @@ private slots:
         QTemporaryDir d;
         QString out, err;
         QCOMPARE(run(d.path(), {"--version"}, &out), 0);
-        QVERIFY(out.startsWith("hyprnotes 0.2.0"));
+        QVERIFY(out.startsWith("hyprnotes 0.2.1"));
         QCOMPARE(run(d.path(), {"--help"}, &out), 0);
         QVERIFY(out.contains("--show-organizer"));
         QCOMPARE(run(d.path(), {"--nope"}, &out, &err), 2);

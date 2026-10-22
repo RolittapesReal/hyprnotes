@@ -6,6 +6,7 @@
 #include "config.h"
 #include "hn/core/paths.h"
 #include "hn/plugins/store.h"
+#include "hn/platform/instance_transport.h"
 #include "hn/theme/theme_io.h"
 #include <QCryptographicHash>
 
@@ -177,7 +178,15 @@ int runPluginCli(const CliOptions &o, QTextStream &in, QTextStream &out, QTextSt
     }
     audit.log("consent", r.id, QString("permissions [%1] sha256 %2 (command line)").arg(c.manifest.permissions.join(", "), r.hash));
     audit.log("enable", r.id);
-    out << "Installed and enabled " << c.manifest.name << ". A running Hyprnotes picks it up after a restart.\n";
+    const auto refresh = hn::platform::sendAction(Action::RefreshPlugins);
+    using Status = hn::platform::ClientResult::Status;
+    out << "Installed and enabled " << c.manifest.name;
+    switch (refresh.status) {
+    case Status::Acked: out << ". The running Hyprnotes instance refreshed its Plugins page.\n"; break;
+    case Status::Rejected: out << ". A running Hyprnotes could not complete the rescan (a plugin was busy or the plugin trust file was unreadable); restart Hyprnotes to pick the plugin up.\n"; break;
+    case Status::NoInstance: out << ". Hyprnotes is not running; the plugin loads at the next start.\n"; break;
+    default: out << ". A running Hyprnotes picks it up after a restart.\n"; break;
+    }
     return 0;
 }
 

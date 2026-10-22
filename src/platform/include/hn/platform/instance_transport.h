@@ -11,12 +11,13 @@
 
 namespace hn::platform {
 
-enum class Action { ShowOrganizer, NewNote, Background };
+enum class Action { ShowOrganizer, NewNote, Background, RefreshPlugins };
 constexpr int kProtocolVersion = 1;
 constexpr int kMaxLine = 128;
 constexpr int kAckDeadlineMs = 1000;
 
 QString actionName(Action a);
+bool decodeInstanceRequest(const QByteArray &line, Action *action, QString *error = nullptr);
 
 // $XDG_RUNTIME_DIR/hyprnotes-<WAYLAND_DISPLAY>-<uid>.sock ; empty if the env is unusable.
 QString defaultEndpointPath();

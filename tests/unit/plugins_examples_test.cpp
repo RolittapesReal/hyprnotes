@@ -68,7 +68,7 @@ private slots:
         }
     }
     void everyExampleInstallsFromAnArchiveToo() {
-        for (const QString &id : {"word-count", "insert-date", "sort-lines", "markdown-toc", "title-case-selection", "daily-note", "snippets", "backlinks-panel", "link-completion", "open-tasks"}) {
+        for (const QString &id : QStringList{"word-count", "insert-date", "sort-lines", "markdown-toc", "title-case-selection", "daily-note", "snippets", "backlinks-panel", "link-completion", "open-tasks"}) {
             Rig r;
             const QString pkg = r.env.tmp.path() + "/" + id + ".hnplugin";
             QList<PluginError> errs;

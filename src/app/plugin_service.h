@@ -49,6 +49,7 @@ public:
     // ---- lifecycle ----
     bool active() const { return bool(m_mgr); }
     hn::plugins::PluginManager *manager();                 // creates (scan + legacy migration) on first use
+    bool refresh();   // false: nothing was rescanned (a plugin callback is running) or the trust file could not be read (rescanned with the consent already in memory)
     hn::plugins::PluginManager *managerIfActive() const { return m_mgr.get(); }
     bool somethingEnabledOnDisk() const;                   // cheap: reads plugins.json only
     void startIfNeeded();                                  // launch: creates the manager only when a plugin is enabled; emits app.started
@@ -123,7 +124,7 @@ private:
     QHash<NoteSession *, QList<QMetaObject::Connection>> m_conns;
     QMap<QString, QString> m_names;
     QStringList m_legacyPending;
-    bool m_started = false;
+    bool m_appStarted = false;
 };
 
 } // namespace hn::app

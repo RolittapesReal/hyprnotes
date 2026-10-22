@@ -37,6 +37,19 @@ struct HyprSyntax {
 };
 } // namespace
 
+bool parseHyprEventLine(const QByteArray& raw, HyprEventLine* out) {
+  if (raw.size() > (1 << 20)) return false;
+  const QString line = QString::fromUtf8(raw);
+  if (line.toUtf8() != raw) return false;
+  const int sep = line.indexOf(QStringLiteral(">>"));
+  if (sep <= 0) return false;
+  const QString name = line.left(sep);
+  static const QRegularExpression validName(QStringLiteral("^[A-Za-z][A-Za-z0-9_]*$"));
+  if (!validName.match(name).hasMatch()) return false;
+  if (out) *out = {name, line.mid(sep + 2), HyprSyntax::relevant(name), name == QLatin1String("configreloaded")};
+  return true;
+}
+
 HyprPaths HyprPaths::fromEnv() {
   const QString rt = qEnvironmentVariable("XDG_RUNTIME_DIR"), sig = qEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE");
   if (rt.isEmpty() || sig.isEmpty()) return {};
@@ -92,6 +105,7 @@ void HyprlandIpc::onEventLost() {
   m_event->deleteLater();
   m_event = nullptr;
   m_evBuf.clear();
+  m_discardingEvent = false;
   if (m_connected) { m_connected = false; emit connectionChanged(false); }
   if (!m_running) return;
   m_backoff.start(m_backoffMs);              // bounded exponential backoff, 100ms .. 5s
@@ -99,18 +113,36 @@ void HyprlandIpc::onEventLost() {
 }
 
 void HyprlandIpc::onEventData() {
-  m_evBuf += m_event->readAll();
-  if (m_evBuf.size() > (1 << 20)) m_evBuf.clear();   // bounded; garbage guard
-  int nl;
-  while ((nl = m_evBuf.indexOf('\n')) >= 0) {
-    const QString line = QString::fromUtf8(m_evBuf.left(nl));
-    m_evBuf.remove(0, nl + 1);
-    const int sep = line.indexOf(QStringLiteral(">>"));
-    if (sep <= 0) continue;
-    const QString name = line.left(sep), data = line.mid(sep + 2);
-    emit event(name, data);
-    if (name == QLatin1String("configreloaded")) emit configReloaded();
-    if (HyprSyntax::relevant(name)) { m_pending.insert(name); if (!m_coalesce.isActive()) m_coalesce.start(); }
+  constexpr qsizetype maxEventBytes = 1 << 20;
+  while (m_event && m_event->bytesAvailable() > 0) {
+    QByteArray chunk = m_event->read(64 * 1024);
+    if (chunk.isEmpty()) break;
+    if (m_discardingEvent) {
+      const qsizetype nl = chunk.indexOf('\n');
+      if (nl < 0) continue;
+      chunk.remove(0, nl + 1);
+      m_discardingEvent = false;
+    }
+    m_evBuf += chunk;
+    int nl;
+    while ((nl = m_evBuf.indexOf('\n')) >= 0) {
+      if (nl > maxEventBytes) {
+        m_evBuf.remove(0, nl + 1);
+        continue;
+      }
+      const QByteArray line = m_evBuf.left(nl);
+      m_evBuf.remove(0, nl + 1);
+      HyprEventLine event;
+      if (!parseHyprEventLine(line, &event)) continue;
+      const QString name = event.name, data = event.data;
+      emit rawEvent(name, data);
+      if (event.configReloaded) emit configReloaded();
+      if (event.relevant) { m_pending.insert(name); if (!m_coalesce.isActive()) m_coalesce.start(); }
+    }
+    if (m_evBuf.size() > maxEventBytes) {
+      m_evBuf.clear();
+      m_discardingEvent = true;
+    }
   }
 }
 

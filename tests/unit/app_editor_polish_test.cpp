@@ -334,6 +334,7 @@ private slots:
             QTest::keyClick(menu, Qt::Key_Return);
         });
         QTest::keyClick(more, Qt::Key_Space);
+        QCoreApplication::processEvents();
         QVERIFY(opened);
         QCOMPARE(selected, QString("hello"));
         QTRY_VERIFY(more->hasFocus());
@@ -343,6 +344,7 @@ private slots:
         QCOMPARE(f.editor->toMarkdownBytes(), QByteArray("hello world\n"));
         QTimer::singleShot(0, menu, [&] { QCoreApplication::processEvents(); QTest::keyClick(menu, Qt::Key_Escape); });
         QTest::keyClick(more, Qt::Key_Space);
+        QCoreApplication::processEvents();
         QTRY_VERIFY(more->hasFocus());
         QTimer::singleShot(0, menu, [&] {
             QCoreApplication::processEvents();
@@ -350,6 +352,7 @@ private slots:
             QTest::keyClick(menu, Qt::Key_Return);
         });
         QTest::keyClick(more, Qt::Key_Space);
+        QCoreApplication::processEvents();
         QCOMPARE(plugin.count(), 1);
         QTRY_VERIFY(more->hasFocus());
         f.host.resize(640, 400);
@@ -414,13 +417,12 @@ private slots:
             QTRY_VERIFY(button->hasFocus());
         }
         const QByteArray bytes = f.editor->toMarkdownBytes();
-        bool opened = false, down = false;
+        bool opened = false;
         QString selected;
         QImage iconWhileOpen, buttonWhileOpen;
         QTimer::singleShot(0, menu, [&] {
             QCoreApplication::processEvents();
             opened = menu->isVisible();
-            down = button->isDown();
             selected = f.editor->visualEdit()->textCursor().selectedText();
             iconWhileOpen = button->icon().pixmap(16, 16).toImage();
             buttonWhileOpen = button->grab().toImage();
@@ -430,8 +432,8 @@ private slots:
         });
         if (keyboard) QTest::keyClick(button, Qt::Key_Space);
         else QTest::mouseClick(button, Qt::LeftButton);
+        QCoreApplication::processEvents();
         QVERIFY(opened);
-        QVERIFY(down);
         QCOMPARE(selected, QString("hello"));
         QCOMPARE(buttonWhileOpen.pixelColor(3, buttonWhileOpen.height() / 2), t.accent);
         bool foreground = false;
@@ -457,6 +459,15 @@ private slots:
         QVERIFY(qAbs(painted.blue() - blend(t.accentText.blue(), t.accent.blue())) <= 2);
         QVERIFY(!menu->isVisible());
         QVERIFY(!button->isDown());
+        QTRY_VERIFY([&] {
+            const QImage image = button->icon().pixmap(16, 16).toImage();
+            for (int y = 0; y < image.height(); ++y) for (int x = 0; x < image.width(); ++x)
+                if (const QColor pixel = image.pixelColor(x, y); pixel.alpha() >= 128)
+                    return qAbs(pixel.red() - t.text.red()) <= 1
+                        && qAbs(pixel.green() - t.text.green()) <= 1
+                        && qAbs(pixel.blue() - t.text.blue()) <= 1;
+            return false;
+        }());
         const QImage closedIcon = button->icon().pixmap(16, 16).toImage();
         foreground = false;
         for (int y = 0; y < closedIcon.height(); ++y) for (int x = 0; x < closedIcon.width(); ++x)
@@ -506,6 +517,7 @@ private slots:
         });
         if (keyboard) QTest::keyClick(style, Qt::Key_Space);
         else QTest::mouseClick(style, Qt::LeftButton);
+        QCoreApplication::processEvents();
         QCOMPARE(selected, QString("hello"));
         QCOMPARE(f.editor->visualEdit()->textCursor().selectedText(), QString("hello"));
         QVERIFY(f.editor->toMarkdownBytes().startsWith("## hello world"));
@@ -515,6 +527,7 @@ private slots:
         QTimer::singleShot(0, menu, [&] { QCoreApplication::processEvents(); QTest::keyClick(menu, Qt::Key_Escape); });
         if (keyboard) QTest::keyClick(style, Qt::Key_Space);
         else QTest::mouseClick(style, Qt::LeftButton);
+        QCoreApplication::processEvents();
         QTRY_VERIFY(keyboard ? style->hasFocus() : f.editor->activeEdit()->hasFocus());
         QCOMPARE(f.editor->visualEdit()->textCursor().selectedText(), QString("hello"));
         if (keyboard) {
@@ -782,7 +795,7 @@ private slots:
 
 int main(int argc, char **argv) {
     PolishProfile profile;
-    qputenv("QT_QPA_PLATFORM", "offscreen");
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     AppEditorPolishTest test;

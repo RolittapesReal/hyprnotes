@@ -235,6 +235,8 @@ private:
     QHash<QString, NoteSession *> m_sessions;
     QHash<QString, QPointer<StickyWindow>> m_stickies;
     QPointer<OrganizerWindow> m_organizer;
+    QString m_centeredOrganizerToken;
+    int m_organizerPlaceFailures = 0;   // consecutive refused organizer move/resize dispatches; capped so a refusing compositor cannot loop IPC
     NoteSession::Timing m_timing;
     hn::platform::SessionState m_session;
     QTimer m_sessionTimer;

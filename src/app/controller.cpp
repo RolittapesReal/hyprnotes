@@ -13,7 +13,8 @@
 #include "ui_common.h"
 #include <QClipboard>
 #include <QElapsedTimer>
-#include <QInputDialog>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QAction>
 #include <QApplication>
 #include <QCursor>
@@ -27,6 +28,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
@@ -35,12 +37,39 @@
 #include <QShortcut>
 #include <QStyleHints>
 #include <QUrl>
+#include <QVBoxLayout>
 
 using namespace hn::core;
 using namespace hn::platform;
 using hn::theme::Settings;
 
 namespace hn::app {
+
+namespace {
+std::optional<QString> textPrompt(QWidget *parent, const QString &title, const QString &label, const QString &initial) {
+    QDialog dialog(parent);
+    dialog.setWindowTitle(title);
+    dialog.setWindowIcon(ui::appIcon());
+    dialog.setMinimumWidth(320);
+    dialog.resize(520, 240);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(20, 16, 20, 16);
+    auto *caption = new QLabel(label, &dialog);
+    caption->setProperty("hnRole", "heading");
+    caption->setWordWrap(true);
+    auto *input = new QLineEdit(initial, &dialog);
+    input->setAccessibleName(label);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setDefault(true);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(caption);
+    layout->addWidget(input);
+    layout->addWidget(buttons);
+    input->setFocus();
+    return dialog.exec() == QDialog::Accepted ? std::optional<QString>(input->text()) : std::nullopt;
+}
+}
 
 // ---------------------------------------------------------------- construction
 AppController::AppController(ControllerOptions opt, QObject *parent)
@@ -78,7 +107,7 @@ AppController::AppController(ControllerOptions opt, QObject *parent)
     connect(m_plugins, &PluginService::changed, this, [this] { rebindShortcuts(); });
 
     if (m_opt.useTray) {
-        m_tray = std::make_unique<TrayController>(ui::appIcon());
+        m_tray = std::make_unique<TrayController>(ui::appTrayIcon(m_theme));
         auto *settingsAct = m_tray->menu()->addAction(tr("Settings…"));
         m_tray->menu()->removeAction(settingsAct);
         m_tray->menu()->insertAction(m_tray->quitAction(), settingsAct);
@@ -115,11 +144,11 @@ AppController::AppController(ControllerOptions opt, QObject *parent)
 AppController::~AppController() {
     m_exiting = true;
     if (m_ipc) { m_ipc->disconnect(this); m_ipc.reset(); }   // its stop() emits connectionChanged: must not reach members already destroyed
-    for (auto w : std::as_const(m_stickies)) if (w) w->detach();
+    for (const auto &w : std::as_const(m_stickies)) if (w) w->detach();
     if (m_organizer) m_organizer->detachSession();
     qDeleteAll(m_sessions);
     m_sessions.clear();
-    for (auto w : std::as_const(m_stickies)) delete w.data();
+    for (const auto &w : std::as_const(m_stickies)) delete w.data();
     delete m_organizer.data();
     delete m_plugins;
     m_plugins = nullptr;
@@ -137,6 +166,7 @@ bool AppController::handleAction(Action a) {
     case Action::Background: return true;   // never hides windows the user is using
     case Action::ShowOrganizer: beginInteractive(); showOrganizer(true); return true;
     case Action::NewNote: beginInteractive(); return !newNote().isEmpty();
+    case Action::RefreshPlugins: return m_plugins->refresh();   // false when a busy plugin made the scan skip or the trust file was unreadable: the peer is told
     }
     return false;
 }
@@ -167,6 +197,7 @@ void AppController::applyThemeNow() {
     ui::setTheme(m_theme);
     ui::setReducedMotion(m_settings.reduceMotion);
     hn::theme::applyTheme(m_theme);
+    if (m_tray) m_tray->setIcon(ui::appTrayIcon(m_theme));
     // D10: re-theming a session re-formats its whole document; do it in time-boxed slices, shown notes first.
     m_themeQueue.clear();
     QList<QPointer<NoteSession>> hidden;
@@ -505,7 +536,6 @@ void AppController::release(const QString &rel) {
 // ---------------------------------------------------------------- organizer
 void AppController::ensureOrganizer() {
     if (m_organizer) return;
-    index();
     m_organizer = new OrganizerWindow(this);
 }
 
@@ -745,11 +775,10 @@ QString AppController::duplicateNote(const QString &rel, QString *err) {
 }
 
 void AppController::promptRename(const QString &rel, QWidget *parent) {
-    bool ok = false;
-    const QString name = QInputDialog::getText(parent, tr("Rename note"), tr("File name"), QLineEdit::Normal, QFileInfo(rel).completeBaseName(), &ok);
-    if (!ok) return;
+    const auto name = textPrompt(parent, tr("Rename note"), tr("File name"), QFileInfo(rel).completeBaseName());
+    if (!name) return;
     QString err;
-    if (!renameNoteWithLinks(rel, name, LinkMode::Ask, &err) && !err.isEmpty()) emit errorOccurred(err);
+    if (!renameNoteWithLinks(rel, *name, LinkMode::Ask, &err) && !err.isEmpty()) emit errorOccurred(err);
 }
 
 void AppController::promptEditTags(const QString &rel, QWidget *parent) {
@@ -758,9 +787,8 @@ void AppController::promptEditTags(const QString &rel, QWidget *parent) {
     if (!s) return;
     QStringList cur;
     for (const auto &g : s->tags()) cur << "#" + g;
-    bool ok = false;
-    const QString text = QInputDialog::getText(parent, tr("Edit tags"), tr("Tags are #tokens in the note text, e.g. #work #ideas"), QLineEdit::Normal, cur.join(' '), &ok);
-    if (ok) editTags(rel, parseTagInput(text));
+    const auto text = textPrompt(parent, tr("Edit tags"), tr("Tags are #tokens in the note text, e.g. #work #ideas"), cur.join(' '));
+    if (text) editTags(rel, parseTagInput(*text));
 }
 
 void AppController::showNoteContextMenu(const QString &rel, const QPoint &globalPos, QWidget *parent, bool inSticky) {
@@ -930,7 +958,7 @@ void AppController::setWorkspaceMode(const QString &rel, WorkspaceMode m) {
 }
 
 void AppController::refreshClients() {
-    if (!m_ipc || !m_ipc->connected() || (m_stickies.isEmpty() && !(m_organizer && m_settings.organizerFloating))) return;
+    if (!m_ipc || !m_ipc->connected() || (m_stickies.isEmpty() && !m_organizer)) return;
     if (m_refreshing) { m_refreshAgain = true; return; }
     m_refreshing = true;
     auto done = [this] {
@@ -953,8 +981,47 @@ void AppController::applyClients(const QVector<HyprClient> &clients, const QVect
     const QString appId = QGuiApplication::desktopFileName().isEmpty() ? QStringLiteral("hyprnotes") : QGuiApplication::desktopFileName();
     const auto mine = resolveClients(clients, QCoreApplication::applicationPid(), appId);
     bool changed = false;
-    if (m_organizer && m_settings.organizerFloating && mine.contains(m_organizer->token()))
-        ensureFloating(m_organizer->token(), mine[m_organizer->token()], m_settings.organizerSize, mons, true);
+    if (m_organizer && mine.contains(m_organizer->token())) {
+        const QString token = m_organizer->token();
+        const HyprClient &organizer = mine[token];
+        if (m_settings.organizerFloating)
+            ensureFloating(token, organizer, m_settings.organizerSize, mons, true);
+        if (organizer.floating) {
+            const auto monitor = std::find_if(mons.cbegin(), mons.cend(), [&](const auto &m) { return m.id == organizer.monitor; });
+            if (monitor != mons.cend()) {
+                const bool firstPlacement = m_centeredOrganizerToken != token;
+                if (firstPlacement) m_organizerPlaceFailures = 0;
+                m_centeredOrganizerToken = token;
+                QRect desired = organizer.rect;
+                // Place a newly mapped organizer once. After that the user's placement wins: only a window that has
+                // no visible part left on this monitor is brought back; a partly off-screen drag is left alone.
+                const bool unreachable = !monitor->workArea().intersects(desired);
+                if (firstPlacement || unreachable) {
+                    desired.moveCenter(monitor->workArea().center());
+                    desired = hn::platform::clampToWorkArea(desired, monitor->workArea());
+                }
+                constexpr int kMaxOrganizerPlaceFailures = 3;
+                if (desired == organizer.rect) m_organizerPlaceFailures = 0;
+                if (desired != organizer.rect && m_organizerPlaceFailures < kMaxOrganizerPlaceFailures) {
+                    QPointer<HyprlandIpc> ip(m_ipc.get());
+                    auto failed = [this] { ++m_organizerPlaceFailures; refreshClients(); };
+                    auto move = [ip, failed, ref = organizer.ref, desired](const Reply &reply) {
+                        if (!ip) return;
+                        if (!reply.dispatchOk()) { failed(); return; }
+                        ip->moveExact(ref, desired.x(), desired.y(), [ip, failed](const Reply &moved) {
+                            if (ip && !moved.dispatchOk()) failed();
+                        });
+                    };
+                    if (desired.size() != organizer.rect.size())
+                        ip->resizeExact(organizer.ref, desired.width(), desired.height(), std::move(move));
+                    else
+                        ip->moveExact(organizer.ref, desired.x(), desired.y(), [ip, failed](const Reply &moved) {
+                            if (ip && !moved.dispatchOk()) failed();
+                        });
+                }
+            }
+        }
+    }
     for (auto it = m_stickies.begin(); it != m_stickies.end(); ++it) {
         StickyWindow *w = it.value();
         if (!w || !mine.contains(w->token())) continue;
@@ -1028,9 +1095,13 @@ void AppController::checkQuit() {
     }
     if (blocked) {   // never report a successful shutdown with unsaved work: keep the editor and error visible
         m_quitting = false;
-        if (auto *w = stickyOf(blocked->rel())) w->present(true);
-        else if (m_organizer && m_organizer->currentSession() == blocked) m_organizer->present(true);
-        else createSticky(blocked, true, nullptr);
+        if (auto *w = stickyOf(blocked->rel())) {
+            w->present(true);
+        } else if (m_organizer && m_organizer->currentSession() == blocked) {
+            m_organizer->present(true);
+        } else {
+            createSticky(blocked, true, nullptr);
+        }
         emit quitAborted(blocked->stateLabel() + ": " + blocked->rel());
         return;
     }

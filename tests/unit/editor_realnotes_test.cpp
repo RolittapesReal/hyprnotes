@@ -126,6 +126,7 @@ private slots:
         row("item-nested-and-cont", "- a\n  - b\n\n    b2\n  - c\n\n  a2\n- d\n");
         row("item-heading", "- a\n\n  # h\n");
         row("item-formatted-cont", "- a\n\n  **bold** and [l](https://a.b)  \n  hard\n");
+        row("list-in-quote", "> - a\n> - b\n");
         row("quote-nested", "> a\n>\n> > b\n>\n> c\n");
         row("quote-nested-deep", "> > > three\n");
         row("quote-nested-lazy", "> a\n> > b\n");
@@ -334,7 +335,6 @@ private slots:
         row("front-matter", "---\ntitle: x\n---\n\nbody\n");
         row("footnote", "text[^1]\n\n[^1]: note\n");
         row("math", "inline $x^2$ math\n");
-        row("list-in-quote", "> - a\n> - b\n");
         row("adjacent-fences", "```\na\n```\n\n```\nb\n```\n");
     }
     void unsupportedStillSource()

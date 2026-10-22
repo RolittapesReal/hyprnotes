@@ -58,6 +58,18 @@ static void runScale(int N, bool assertTargets) {
     for (int rep = 0; rep < 10; ++rep)
         for (const QString &q : qs) { Stopwatch s; auto p = idx.searchNow({q, {}, {}, 50, 0}); warm.add(s.ms()); }
     cold.report(tag + "searchNow_first_touch"); warm.report(tag + "searchNow_warm");
+    // diagnostics only (not part of any gate): per-query warm time, and a dump of the result order for before/after equivalence
+    if (qEnvironmentVariableIsSet("HN_STRESS_PERQUERY"))
+        for (const QString &q : qs) { Dist d; for (int i = 0; i < 10; ++i) { Stopwatch s; idx.searchNow({q, {}, {}, 50, 0}); d.add(s.ms()); } note(QString("perquery %1 ms=%2 q=%3").arg(N).arg(d.pct(.5), 0, 'f', 2).arg(q)); }
+    if (qEnvironmentVariableIsSet("HN_STRESS_DUMP")) {
+        QFile out(qEnvironmentVariable("HN_STRESS_DUMP") + QString(".%1").arg(N));
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            for (const QString &q : qs) for (int off : {0, 50}) {
+                const auto p = idx.searchNow({q, {}, {}, 50, off});
+                QStringList paths; for (const auto &r : p.rows) paths << r.relPath;
+                out.write((q + QString(" @%1 more=%2 err=%3: ").arg(off).arg(p.hasMore).arg(p.error) + paths.join(' ') + "\n").toUtf8());
+            }
+    }
     // async path = what the organizer sees: search() -> searchFinished
     for (int rep = 0; rep < 10; ++rep)
         for (const QString &q : qs) {

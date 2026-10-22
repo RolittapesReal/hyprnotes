@@ -1,0 +1,10 @@
+# GCC-built system Qt/FreeType/HarfBuzz font-cache allocations are process-global and remain rooted
+# in the uninstrumented Qt DSOs when NoteEditor is constructed by the Clang-instrumented harness.
+leak:QFontCache
+leak:QFontDatabasePrivate
+leak:QFreetypeFace
+leak:hb_shape_plan_create_cached2
+leak:hb_shape_plan_execute
+leak:QTextEngine::shapeTextWithHarfbuzzNG
+leak:FcFontRenderPrepare
+leak:FcFontMatch
