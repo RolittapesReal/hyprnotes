@@ -25,7 +25,7 @@ Choose one of these methods. Each installs the same pacman package.
 
 ### 1. A release package
 
-The commands below use version 0.2.1. While it remains unpublished, install the latest available release or build from source.
+The commands below use version 0.2.2. While it remains unpublished, install the latest available release or build from source.
 
 Use this route if you already have the signed package files.
 
@@ -41,14 +41,14 @@ Use this route if you already have the signed package files.
 3. Verify the package against the signature. You should see `Good signature` and the same fingerprint:
 
    ```sh
-   gpg --verify hyprnotes-0.2.1-1-x86_64.pkg.tar.zst.sig hyprnotes-0.2.1-1-x86_64.pkg.tar.zst
+   gpg --verify hyprnotes-0.2.2-1-x86_64.pkg.tar.zst.sig hyprnotes-0.2.2-1-x86_64.pkg.tar.zst
    ```
 
    gpg may also warn that the key is not certified with a trusted signature. That is normal for a key you haven't signed yourself; the fingerprint match is the check that counts.
 4. Install it. pacman shows what it will do and asks before it continues:
 
    ```sh
-   sudo pacman -U hyprnotes-0.2.1-1-x86_64.pkg.tar.zst
+   sudo pacman -U hyprnotes-0.2.2-1-x86_64.pkg.tar.zst
    ```
 
 ### 2. The bootstrap script
@@ -58,7 +58,7 @@ Use this route if you already have the signed package files.
 ```sh
 git clone https://github.com/RolittapesReal/hyprnotes.git
 cd hyprnotes
-HYPRNOTES_RELEASE_URL=https://github.com/RolittapesReal/hyprnotes/releases/download/v0.2.1 bash packaging/bootstrap/install.sh
+HYPRNOTES_RELEASE_URL=https://github.com/RolittapesReal/hyprnotes/releases/download/v0.2.2 bash packaging/bootstrap/install.sh
 ```
 
 The script has the release signing key's fingerprint built in (`1B42F4BE4E8C0722BE5D6EBD40A7D03B60FA39B5`). It downloads from the matching release page.

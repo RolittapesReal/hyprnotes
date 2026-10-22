@@ -19,7 +19,7 @@ using namespace hn::platform;
 
 namespace hn::app {
 
-// 28 px header. Everything but the buttons and chip is a drag handle (native compositor move).
+// Everything but the buttons and chip is a drag handle (native compositor move).
 class StickyHeader : public QWidget {
 public:
     std::function<void(const QPoint &)> onContext;
@@ -64,6 +64,7 @@ StickyWindow::StickyWindow(AppController *c, NoteSession *s)
     h->setSpacing(0);
     m_chip = new ui::ChipButton(m_header);
     m_format = new ui::IconButton("h1", tr("Formatting toolbar"), m_header, kHeader);
+    m_format->setToolTip(tr("Show formatting toolbar"));
     m_format->setCheckable(true);
     m_format->installEventFilter(this);
     m_popIn = new ui::IconButton("popin", tr("Pop in to organizer"), m_header, kHeader);
@@ -101,7 +102,12 @@ StickyWindow::StickyWindow(AppController *c, NoteSession *s)
     connect(s, &NoteSession::titleChanged, this, &StickyWindow::refreshTitle);
     connect(&c->plugins(), &PluginService::panelsChanged, this, [this] { syncPanels(); });
     connect(c, &AppController::noteColorChanged, this, [this](const QString &r) { if (r == m_session->rel()) update(); });
-    connect(c, &AppController::themeChanged, this, [this] { for (auto *w : findChildren<QWidget *>()) w->update(); update(); });
+    connect(c, &AppController::themeChanged, this, [this] {
+        refreshTitle();
+        updateChip();
+        for (auto *w : findChildren<QWidget *>()) w->update();
+        update();
+    });
     setWorkspaceMode(WorkspaceMode::ThisWorkspace);
     syncPanels();
     refreshTitle();
@@ -186,6 +192,7 @@ bool StickyWindow::toolbarShown() const { return m_toolbarHost->isVisibleTo(cons
 void StickyWindow::setToolbarShown(bool on) {
     if (on == toolbarShown()) return;
     m_format->setChecked(on);
+    m_format->setToolTip(on ? tr("Hide formatting toolbar (Esc)") : tr("Show formatting toolbar"));
     m_toolbarHost->setVisible(on);
     if (on) m_fade->play();
     if (auto *ed = m_session->editor(); ed) ed->focusEditor();
@@ -212,8 +219,8 @@ void StickyWindow::setWorkspaceMode(WorkspaceMode m) {
 
 void StickyWindow::updateChip() {
     const bool all = m_mode == WorkspaceMode::AllWorkspaces;
-    const bool wide = width() >= 330;
-    m_chip->setText(all ? (wide ? tr("ALL WORKSPACES") : tr("ALL")) : (wide ? tr("THIS WORKSPACE") : tr("HERE")));
+    const bool wide = width() >= 390;
+    m_chip->setText(all ? tr("Pinned") : (wide ? tr("This workspace") : tr("Here")));
     m_chip->setToolTip(all ? tr("Shown on all workspaces (pinned). Click for this workspace only.") : tr("Shown on this workspace only. Click to show on all workspaces."));
     m_chip->setAccessibleName(m_chip->toolTip());
     m_chip->setFixedSize(m_chip->sizeHint());
@@ -225,15 +232,24 @@ void StickyWindow::refreshTitle() {
     const QString t = m_session->title();
     m_header->title->setText(t.isEmpty() ? tr("Untitled") : t);
     m_header->title->setTextFont(ui::uiFont(13, QFont::Bold));
+    m_header->title->setColor(isActiveWindow() ? ui::theme().text : ui::theme().muted);
     if (m_titled) setWindowTitle(m_header->title->text());   // only after the initial identity title was mapped
 }
 
 // ---------------------------------------------------------------- painting / chrome
+void StickyWindow::changeEvent(QEvent *event) {
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::ActivationChange) {
+        refreshTitle();
+        update();
+    }
+}
+
 void StickyWindow::paintEvent(QPaintEvent *) {
     QPainter p(this);
     const auto &t = ui::theme();
     p.fillRect(rect(), t.bg);
-    p.setPen(t.border);
+    p.setPen(isActiveWindow() ? t.muted : t.border);
     p.drawRect(rect().adjusted(0, 0, -1, -1));
     p.fillRect(QRect(0, 0, 4, height()), ui::noteColor(m_c->noteColor(m_session->rel())));
     if (!m_titled) {

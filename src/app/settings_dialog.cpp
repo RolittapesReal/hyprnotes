@@ -163,6 +163,13 @@ SettingsDialog::SettingsDialog(AppController *c, QWidget *parent) : QDialog(pare
         if (auto *scroll = qobject_cast<QScrollArea *>(m_tabs->widget(i)))
             scroll->setAccessibleName(tr("%1 settings").arg(m_tabs->tabText(i)));
     lay->addWidget(m_tabs);
+    auto *fade = new ui::FadeOverlay(m_tabs->currentWidget()->parentWidget());
+    connect(m_tabs, &QTabWidget::currentChanged, this,
+        [this, fade, previous = QPointer<QWidget>(m_tabs->currentWidget())](int) mutable {
+            const auto snapshot = previous ? fade->snapshot(previous) : QPixmap{};
+            previous = m_tabs->currentWidget();
+            fade->play(snapshot);
+        });
     m_note = new QLabel(this);
     m_note->setContentsMargins(24, 0, 24, 0);
     m_note->setWordWrap(true);
@@ -395,9 +402,30 @@ QWidget *SettingsDialog::tabKeys() {
         for (const auto &a : m_c->plugins().commands())
             addRow(QStringLiteral("plugin:") + a.qid, tr("Plugin: %1: %2").arg(a.pluginName, a.title), pk.value(QStringLiteral("plugin:") + a.qid), a.key);
     }
+    const auto addReference = [this](const QString &label, const QString &shortcut, const QString &context) {
+        const int row = m_keys->rowCount();
+        m_keys->insertRow(row);
+        auto *name = new QTableWidgetItem(label);
+        auto *key = new QTableWidgetItem(shortcut);
+        for (auto *item : {name, key}) {
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            item->setToolTip(context);
+        }
+        m_keys->setItem(row, 0, name);
+        m_keys->setItem(row, 1, key);
+    };
+    const auto fixed = tr("Fixed shortcut.");
+    addReference(tr("Open Keys settings"), QStringLiteral("F1"), fixed);
+    addReference(tr("Rename note (organizer)"), QStringLiteral("F2"), fixed);
+    addReference(tr("Hide toolbar"), QStringLiteral("Esc"), fixed);
+    const auto typing = tr("Type at the start of a line in visual mode.");
+    addReference(tr("Type a heading"), tr("# + Space"), typing);
+    addReference(tr("Type a bulleted list"), tr("- + Space"), typing);
+    addReference(tr("Type a task"), tr("[ ] + Space"), typing);
+    addReference(tr("Type a quote"), tr("> + Space"), typing);
     resizeKeyRows();
     l->addWidget(m_keys, 1);
-    l->addWidget(hint(tr("Clear a field to unbind the action."), w));
+    l->addWidget(hint(tr("Clear a field to unbind."), w));
     return w;
 }
 
@@ -502,6 +530,7 @@ void SettingsDialog::apply(bool fontEdited) {
     if (QDir::isAbsolutePath(folder)) s.notesFolder = QDir::cleanPath(folder);
     for (int r = 0; r < m_keys->rowCount(); ++r) {
         const QString id = m_keys->item(r, 0)->data(Qt::UserRole).toString();
+        if (id.isEmpty()) continue; // fixed shortcuts and Markdown typing tips are reference rows
         const QKeySequence ks = static_cast<QKeySequenceEdit *>(m_keys->cellWidget(r, 1))->keySequence();
         if (id.startsWith(QLatin1String("plugin:"))) {   // only rows the user changed are persisted; the plugin default stays a default
             if (ks.toString(QKeySequence::PortableText) != m_keys->item(r, 0)->data(Qt::UserRole + 2).toString()) s.keybindings[id] = ks;

@@ -107,7 +107,7 @@ AppController::AppController(ControllerOptions opt, QObject *parent)
     connect(m_plugins, &PluginService::changed, this, [this] { rebindShortcuts(); });
 
     if (m_opt.useTray) {
-        m_tray = std::make_unique<TrayController>(ui::appTrayIcon(m_theme));
+        m_tray = std::make_unique<TrayController>(ui::appIcon());
         auto *settingsAct = m_tray->menu()->addAction(tr("Settings…"));
         m_tray->menu()->removeAction(settingsAct);
         m_tray->menu()->insertAction(m_tray->quitAction(), settingsAct);
@@ -197,7 +197,6 @@ void AppController::applyThemeNow() {
     ui::setTheme(m_theme);
     ui::setReducedMotion(m_settings.reduceMotion);
     hn::theme::applyTheme(m_theme);
-    if (m_tray) m_tray->setIcon(ui::appTrayIcon(m_theme));
     // D10: re-theming a session re-formats its whole document; do it in time-boxed slices, shown notes first.
     m_themeQueue.clear();
     QList<QPointer<NoteSession>> hidden;
@@ -435,8 +434,9 @@ NoteSession *AppController::openInOrganizer(const QString &rel) {
     NoteSession *s = session(rel);
     if (!s) s = createSession(rel);
     if (!s) return nullptr;
+    const auto previous = m_organizer->transitionSnapshot();
     if (prev && prev != s) { m_organizer->detachSession(); retireOrganizerNote(prev); }
-    m_organizer->attachSession(s);
+    m_organizer->attachSession(s, previous);
     return s;
 }
 
@@ -1222,13 +1222,7 @@ QMap<QString, QKeySequence> AppController::effectiveBindings() const {
 }
 
 void AppController::showShortcuts(QWidget *window) {
-    QList<QPair<QString, QKeySequence>> extra;
-    const auto keys = m_plugins->pluginKeys();
-    for (const auto &a : m_plugins->commands()) {
-        const QKeySequence ks = keys.value(QStringLiteral("plugin:") + a.qid);
-        if (!ks.isEmpty()) extra.append({QStringLiteral("%1: %2").arg(a.pluginName, a.title), ks});
-    }
-    ui::ShortcutSheet::toggle(window, effectiveBindings(), extra);
+    showSettings(window, SettingsDialog::kKeysTab);
 }
 
 void AppController::showPalette(QWidget *host, NoteSession *s) {

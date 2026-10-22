@@ -257,7 +257,7 @@ private slots:
         QCOMPARE(ed->width(), width);
         QCOMPARE(ed->visualEdit()->document()->size().width(), docBefore.width());
         QCOMPARE(ed->visualEdit()->cursorRect().topLeft(), cursorBefore.topLeft());
-        QCOMPARE(w->header()->height(), 28);
+        QCOMPARE(w->header()->height(), 32);
     }
 
     void sticky_chip_toggles_workspace_mode() {

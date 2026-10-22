@@ -50,11 +50,11 @@ private slots:
             QTRY_VERIFY_WITH_TIMEOUT(o->model()->rowCount() >= 7, 8000);
             QTest::qWait(400);
             QVERIFY(o->grab().save(QString("%1/app-organizer-noselection-%2%3.png").arg(out, scheme, sfx)));
-            hn::app::ui::ShortcutSheet::toggle(o, c.settings().keybindings);
-            QTest::qWait(100);
-            QVERIFY(o->grab().save(QString("%1/app-organizer-keys-%2%3.png").arg(out, scheme, sfx)));
-            hn::app::ui::ShortcutSheet::toggle(o, c.settings().keybindings);
-            QTRY_VERIFY(!hn::app::ui::ShortcutSheet::isOpen(o));
+            c.showShortcuts(o);
+            auto *keys = o->findChild<SettingsDialog *>(); QVERIFY(keys);
+            QTest::qWait(150);
+            QVERIFY(keys->grab().save(QString("%1/app-organizer-keys-%2%3.png").arg(out, scheme, sfx)));
+            QPointer<SettingsDialog> guard(keys); keys->close(); QTRY_VERIFY(guard.isNull());
             auto *pop = new hn::app::ui::SwatchPopover(1);
             pop->popup(QPoint(40, 40));
             QTest::qWait(100);
@@ -64,10 +64,11 @@ private slots:
             auto *w = c.stickyOf("Work/Launch plan.md");
             w->resize(360, 300);
             QTest::qWait(300);
-            hn::app::ui::ShortcutSheet::toggle(w, c.settings().keybindings);
-            QTest::qWait(100);
-            QVERIFY(w->grab().save(QString("%1/app-sticky-keys-%2%3.png").arg(out, scheme, sfx)));
-            hn::app::ui::ShortcutSheet::toggle(w, c.settings().keybindings);
+            c.showShortcuts(w);
+            keys = w->findChild<SettingsDialog *>(); QVERIFY(keys);
+            QTest::qWait(150);
+            QVERIFY(keys->grab().save(QString("%1/app-sticky-keys-%2%3.png").arg(out, scheme, sfx)));
+            guard = keys; keys->close(); QTRY_VERIFY(guard.isNull());
         }
     }
     // Opt-in review sweep: every built-in theme (dark; plus Modernist light) -> organizer, menu, Settings tabs, sticky.

@@ -216,7 +216,7 @@ QLabel[hnRole="section"] { color: @muted@; font-size: @sectionSize@px; font-weig
 QLabel[hnRole="heading"] { color: @text@; font-size: @headingSize@px; font-weight: bold; }
 QLabel[hnRole="danger"] { color: @danger@; font-weight: bold; }
 QLabel[hnRole="accent"] { color: @accent@; }
-QToolTip { background: @text@; color: @bg@; border: @bw@px solid @text@; padding: 4px 8px; }
+QToolTip { background: @surface@; color: @text@; border: @bw@px solid @border@; padding: 4px 8px; }
 QPushButton, QToolButton { background: @surface@; color: @text@; border: @bw@px solid @border@; border-radius: @r@px;
   padding: 3px 15px; min-height: 24px; font-weight: 600; }
 QToolButton { padding: 3px 7px; min-width: 16px; background: transparent; border-color: transparent; }
@@ -354,7 +354,7 @@ void applyTheme(const Theme &t) {
     p.setColor(QPalette::Window, t.bg); p.setColor(QPalette::WindowText, t.text);
     p.setColor(QPalette::Base, t.surface); p.setColor(QPalette::AlternateBase, t.bg);
     p.setColor(QPalette::Text, t.text); p.setColor(QPalette::Button, t.surface); p.setColor(QPalette::ButtonText, t.text);
-    p.setColor(QPalette::ToolTipBase, t.text); p.setColor(QPalette::ToolTipText, t.bg);
+    p.setColor(QPalette::ToolTipBase, t.surface); p.setColor(QPalette::ToolTipText, t.text);
     p.setColor(QPalette::Highlight, t.accent); p.setColor(QPalette::HighlightedText, t.accentText);
     p.setColor(QPalette::PlaceholderText, t.muted); p.setColor(QPalette::Link, t.accent);
     p.setColor(QPalette::Mid, t.border); p.setColor(QPalette::Dark, t.border);

@@ -299,7 +299,7 @@ results[#results + 1] = tostring(big:find('zzz'))
         Rig r;
         QVERIFY(r.addLua("starter", {}, "hn.on('app.started', function(v) hn.log('started ' .. v) end)\n"));
         r.mgr->appStarted();
-        QCOMPARE(r.logsOf("starter"), QStringList{"started 0.2.1"});
+        QCOMPARE(r.logsOf("starter"), QStringList{"started 0.2.2"});
         Rig quiet;
         quiet.mgr->appStarted();
         QCOMPARE(quiet.mgr->loadedStates(), 0);

@@ -7,6 +7,8 @@
 #include "hn/plugins/store.h"
 #include "plugins_page.h"
 #include "settings_dialog.h"
+#include <QKeySequenceEdit>
+#include <QTableWidget>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QJsonArray>
@@ -229,9 +231,9 @@ hn.on("selection.changed", function(p) hn.log("EV selection " .. p) end)
         const QString source = l.dir.filePath("src");
         mk(source, "late", {}, "hn.on('app.started', function(version) hn.log('LATE started ' .. version) end)");
         QVERIFY(c.plugins().install(source + "/late", nullptr, nullptr).ok);
-        QCOMPARE(std::count_if(g_logs.cbegin(), g_logs.cend(), [](const QString &line) { return line.contains("LATE started 0.2.1"); }), 1);
+        QCOMPARE(std::count_if(g_logs.cbegin(), g_logs.cend(), [](const QString &line) { return line.contains("LATE started 0.2.2"); }), 1);
         c.plugins().manager()->appStarted();
-        QCOMPARE(std::count_if(g_logs.cbegin(), g_logs.cend(), [](const QString &line) { return line.contains("LATE started 0.2.1"); }), 1);
+        QCOMPARE(std::count_if(g_logs.cbegin(), g_logs.cend(), [](const QString &line) { return line.contains("LATE started 0.2.2"); }), 1);
     }
 
     void instance_refresh_action_rescans_plugins_without_reload() {
@@ -947,18 +949,22 @@ hn.command{ id = "steal", title = "Steal", key = "Ctrl+B", run = function() end 
         s->editor()->visualEdit()->moveCursor(QTextCursor::End);
         QTest::keyClick(w, Qt::Key_U, Qt::ControlModifier | Qt::AltModifier);
         QTRY_VERIFY(plain(s).contains("[go]"));
-        // cheat sheet shows it
+        // The shared Keys tab includes plugin defaults and the command palette.
         c.showShortcuts(w);
-        auto *sheet = ui::ShortcutSheet::openOn(w);
-        QVERIFY(sheet);
+        auto *dialog = w->findChild<SettingsDialog *>(); QVERIFY(dialog);
         bool found = false, palette = false;
-        for (const auto &r : sheet->rows()) {
-            if (r.label == "Keys: Go") { found = true; QCOMPARE(r.group, QString("PLUGINS")); }
-            if (r.label == "Command palette") palette = true;
+        for (int row = 0; row < dialog->keysTable()->rowCount(); ++row) {
+            auto *item = dialog->keysTable()->item(row, 0);
+            const auto id = item->data(Qt::UserRole).toString();
+            if (id == "plugin:keys:go") {
+                found = true; QCOMPARE(item->text(), QString("Plugin: Keys: Go"));
+                auto *editor = qobject_cast<QKeySequenceEdit *>(dialog->keysTable()->cellWidget(row, 1));
+                QVERIFY(editor); QCOMPARE(editor->keySequence(), QKeySequence("Ctrl+Alt+U"));
+            }
+            if (id == "command-palette") palette = true;
         }
-        QVERIFY(found);
-        QVERIFY(palette);
-        c.showShortcuts(w);
+        QVERIFY(found); QVERIFY(palette);
+        QPointer<SettingsDialog> guard(dialog); dialog->close(); QTRY_VERIFY(guard.isNull());
         // a user override in config wins over the plugin default
         auto st = c.settings();
         st.keybindings["plugin:keys:go"] = QKeySequence("Ctrl+Alt+J");

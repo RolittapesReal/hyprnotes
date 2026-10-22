@@ -275,7 +275,7 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     pl->addWidget(m_slot, 1);
     m_status = new StatusStrip(c, m_pane);
     pl->addWidget(m_status);
-    m_fade = new ui::FadeOverlay(m_slot);
+    m_fade = new ui::FadeOverlay(m_pane);
     m_editorStack->addWidget(m_editorEmpty);
     m_editorStack->addWidget(m_pane);
     m_editorStack->addWidget(m_elsewherePanel);
@@ -306,7 +306,14 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
         runSearch(0);
     });
     connect(m_newBtn, &QPushButton::clicked, this, [this] { m_c->newNote(m_folder, true); });
-    connect(m_listEmpty, &ui::EmptyState::primaryClicked, this, [this] { m_c->newNote(m_folder, true); });
+    connect(m_listEmpty, &ui::EmptyState::primaryClicked, this, [this] {
+        if (m_emptyClearsFilters) {
+            m_search->clear();
+            m_debounce.stop();
+            setFilter({}, {});
+            m_search->setFocus();
+        } else m_c->newNote(m_folder, true);
+    });
     connect(m_editorEmpty, &ui::EmptyState::primaryClicked, this, [this] { m_c->newNote(m_folder, true); });
     connect(m_elsewherePanel, &ui::EmptyState::primaryClicked, this, [this] { m_c->openSticky(m_elsewhere, true); });
     connect(m_elsewherePanel, &ui::EmptyState::secondaryClicked, this, [this] { m_c->popIn(m_elsewhere); });
@@ -349,7 +356,7 @@ OrganizerWindow::OrganizerWindow(AppController *c) : QWidget(nullptr, Qt::Window
     auto *help = new QShortcut(QKeySequence(Qt::Key_F1), this);
     connect(help, &QShortcut::activated, this, [this] { m_c->showShortcuts(this); });
     setAcceptDrops(true);
-    m_list->installEventFilter(this);   // "?" opens the cheat sheet wherever it is not a typed character
+    m_list->installEventFilter(this);   // "?" opens Keys settings wherever it is not a typed character
     m_rail->installEventFilter(this);
     m_c->bindShortcuts(this, [this] { return m_session.data(); });
     auto *rn = new QAction(this);
@@ -684,7 +691,8 @@ void OrganizerWindow::syncSelection() {
 void OrganizerWindow::updateStacks() {
     const bool searching = !m_search->text().trimmed().isEmpty() || !m_folder.isEmpty() || !m_tag.isEmpty();
     if (m_model->rowCount() == 0 && m_lastId) {
-        if (searching) m_listEmpty->setContent(ui::Art::Search, tr("No matches"), tr("Nothing fits that search. Try fewer words, or clear the filter."));
+        m_emptyClearsFilters = searching;
+        if (searching) m_listEmpty->setContent(ui::Art::Search, tr("No matches"), tr("Try a different search or clear your filters."), tr("Clear filters"));
         else m_listEmpty->setContent(ui::Art::Stack, tr("Nothing here yet"), tr("Notes are plain Markdown files in your folder. Start with one."), tr("New note"));
         m_listStack->setCurrentWidget(m_listEmpty);
     } else m_listStack->setCurrentWidget(m_list);
@@ -702,7 +710,9 @@ void OrganizerWindow::updateStacks() {
 }
 
 // ---------------------------------------------------------------- editor region
-void OrganizerWindow::attachSession(NoteSession *s) {
+QPixmap OrganizerWindow::transitionSnapshot() { return m_fade->snapshot(); }
+
+void OrganizerWindow::attachSession(NoteSession *s, const QPixmap &previous) {
     if (m_session == s) return;
     detachSession();
     m_session = s;
@@ -717,7 +727,7 @@ void OrganizerWindow::attachSession(NoteSession *s) {
     updateHeader();
     updateStacks();
     syncSelection();
-    m_fade->play();
+    m_fade->play(previous);
 }
 
 void OrganizerWindow::detachSession() {

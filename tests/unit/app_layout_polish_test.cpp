@@ -9,6 +9,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QToolButton>
+#include <QTimer>
 #include <unistd.h>
 
 using namespace apptest;
@@ -50,62 +51,78 @@ private slots:
     }
     void init() { m_savedTheme = ui::theme(); }
     void cleanup() { ui::setTheme(m_savedTheme); hn::theme::applyTheme(m_savedTheme); }
-    void shortcutSheetSeparatesLabelsAndKeycaps_data() {
-        QTest::addColumn<int>("fontSize"); QTest::addColumn<QSize>("size");
-        for (int font : {14, 32}) for (QSize size : {QSize(260, 180), QSize(360, 300), QSize(720, 480)})
-            QTest::newRow(qPrintable(QString("%1-%2").arg(font).arg(size.width()))) << font << size;
+    void noMatchesOffersAWorkingClearFiltersAction() {
+        Lib lib; lib.write("work/a.md", "# Alpha\n"); lib.write("b.md", "# Beta\n");
+        AppController controller(lib.opts()); controller.showOrganizer();
+        auto *organizer = controller.organizer();
+        QTRY_COMPARE(organizer->model()->rowCount(), 2);
+        organizer->setFilter("missing-folder", "missing-tag");
+        organizer->searchEdit()->setText("no-such-note"); organizer->runSearchNow();
+        QTRY_COMPARE(organizer->model()->rowCount(), 0);
+        QPushButton *clear = nullptr;
+        ui::EmptyState *empty = nullptr;
+        for (auto *state : organizer->findChildren<ui::EmptyState *>())
+            if (state->isVisible())
+                for (auto *button : state->findChildren<QPushButton *>())
+                    if (button->isVisible() && button->text() == "Clear filters") { clear = button; empty = state; }
+        QVERIFY(clear);
+        if (const auto out = qEnvironmentVariable("HN_SCREENSHOT_DIR"); !out.isEmpty())
+            QVERIFY(empty->grab().save(out + "/no-matches.png"));
+        clear->setFocus(Qt::TabFocusReason);
+        QTest::keyClick(clear, Qt::Key_Space);
+        bool openedDialog = false;
+        QTimer::singleShot(0, &controller, [&] {
+            if (auto *modal = QApplication::activeModalWidget()) { openedDialog = true; modal->close(); }
+        });
+        clear->click(); // repeated activation while replacement results are still queued
+        QCoreApplication::processEvents();
+        QVERIFY(!openedDialog);
+        QVERIFY(organizer->searchEdit()->text().isEmpty());
+        QTRY_COMPARE(organizer->model()->rowCount(), 2);
+        QCOMPARE(controller.openNotes().size(), 0); // recovery action must not create a note
     }
-    void shortcutSheetSeparatesLabelsAndKeycaps() {
-        QFETCH(int, fontSize); QFETCH(QSize, size);
-        auto theme = hn::theme::loadTheme("modernist", false); theme.baseSize = fontSize;
-        ui::setTheme(theme); hn::theme::applyTheme(theme);
-        QWidget host; host.resize(size);
-        QLineEdit previous(&host); previous.setGeometry(4, 4, 120, 32);
-        host.show(); host.activateWindow(); previous.setFocus(); QTRY_VERIFY(previous.hasFocus());
-        ui::ShortcutSheet::toggle(&host,
-            {{"toggle-organizer", QKeySequence("Ctrl+Shift+O")}, {"command-palette", QKeySequence("Ctrl+Shift+P")}},
-            {{"Run a plugin operation with a deliberately long descriptive action name", QKeySequence("Ctrl+Alt+Shift+Meta+P, Ctrl+Alt+Shift+Meta+O")}});
-        auto *sheet = ui::ShortcutSheet::openOn(&host); QVERIFY(sheet);
-        QVERIFY(!sheet->titleRect().intersects(sheet->closeHintRect()));
-        QCOMPARE(sheet->rowGeometries().size(), sheet->rows().size());
-        QList<QRect> occupied;
-        int rowIndex = 0;
-        for (const auto &row : sheet->rowGeometries()) {
-            const int needed = QFontMetrics(sheet->font()).boundingRect(QRect(0, 0, row.label.width(), 10000),
-                Qt::TextWordWrap, sheet->rows()[rowIndex].label).height();
-            QVERIFY(row.label.height() >= needed);
-            int keyIndex = 0;
-            for (const QRect &key : row.keys) {
-                const QString text = sheet->rows()[rowIndex].keys[keyIndex++];
-                if (QStringList{"Shift", "F1", "F2", "Esc", "Space"}.contains(text))
-                    QVERIFY2(key.height() <= QFontMetrics(ui::uiFont(qMax(11, fontSize - 8), QFont::DemiBold)).height() + 8,
-                             qPrintable(text + " must not wrap when its natural width fits"));
-                QVERIFY(!row.label.intersects(key));
-                QVERIFY(key.left() >= 0 && key.right() < sheet->width());
-                for (const QRect &other : occupied) QVERIFY(!key.intersects(other));
-                occupied << key;
-            }
-            for (const QRect &other : occupied) QVERIFY(!row.label.intersects(other));
-            occupied << row.label;
-            QVERIFY(row.label.left() >= 0 && row.label.right() < sheet->width());
-            ++rowIndex;
+    void stickyHeaderStaysReadable_data() {
+        QTest::addColumn<bool>("dark"); QTest::addColumn<int>("width");
+        for (bool dark : {false, true}) for (int width : {260, 420})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(dark ? "dark" : "light").arg(width))) << dark << width;
+    }
+    void stickyHeaderStaysReadable() {
+        QFETCH(bool, dark); QFETCH(int, width);
+        Lib lib; lib.write("a.md", "# A note with a longer title\n\nA little room to write.\n");
+        AppController controller(lib.opts());
+        auto settings = controller.settings(); settings.colorScheme = dark ? "dark" : "light";
+        controller.applySettings(settings, controller.prefs());
+        controller.openSticky("a.md"); auto *window = controller.stickyOf("a.md");
+        window->resize(width, 300); QCoreApplication::processEvents();
+        QCOMPARE(window->header()->height(), 32);
+        auto *title = window->header()->findChild<ui::ElidedLabel *>();
+        QVERIFY(title); QVERIFY(title->width() >= 48);
+        QList<QRect> occupied{title->geometry()};
+        for (auto *button : window->header()->findChildren<QAbstractButton *>()) {
+            if (!button->isVisible()) continue;
+            QVERIFY(window->header()->rect().contains(button->geometry()));
+            for (const auto &other : occupied) QVERIFY(!other.intersects(button->geometry()));
+            occupied << button->geometry();
         }
-        if (size.width() < 720) QVERIFY(sheet->maximumScroll() > 0);
-        QTest::keyClick(sheet, Qt::Key_End); QCOMPARE(sheet->scrollOffset(), sheet->maximumScroll());
-        const auto last = sheet->rowGeometries().last();
-        QVERIFY2(sheet->rect().contains(last.label), qPrintable(QString("last %1,%2 %3x%4; scroll %5; sheet %6x%7")
-            .arg(last.label.x()).arg(last.label.y()).arg(last.label.width()).arg(last.label.height()).arg(sheet->scrollOffset()).arg(sheet->width()).arg(sheet->height())));
-        for (const auto &key : last.keys) QVERIFY(sheet->rect().contains(key));
-        QTest::keyClick(sheet, Qt::Key_Home); QCOMPARE(sheet->scrollOffset(), 0);
-        if (const auto dir = qEnvironmentVariable("HN_SCREENSHOT_DIR"); !dir.isEmpty())
-            QVERIFY(sheet->grab().save(dir + QString("/help-%1-%2.png").arg(fontSize).arg(size.width())));
-        QTest::keyClick(sheet, Qt::Key_Tab); QVERIFY(ui::ShortcutSheet::isOpen(&host));
-        QTest::keyClick(sheet, Qt::Key_A, Qt::ControlModifier); QVERIFY(ui::ShortcutSheet::isOpen(&host));
-        QPointer<QWidget> guard(sheet); QTest::keyClick(sheet, Qt::Key_Escape); QTRY_VERIFY(guard.isNull());
-        QTRY_VERIFY(previous.hasFocus());
-        ui::ShortcutSheet::toggle(&host, {});
-        guard = ui::ShortcutSheet::openOn(&host);
-        QTest::mouseClick(guard, Qt::LeftButton); QTRY_VERIFY(guard.isNull());
+        QCOMPARE(window->chip()->text(), width < 390 ? QString("Here") : QString("This workspace"));
+        window->chip()->click(); QCOMPARE(window->chip()->text(), QString("Pinned"));
+        QCoreApplication::processEvents();
+        QVERIFY(title->width() >= 48);
+        QVERIFY(!title->geometry().intersects(window->chip()->geometry()));
+        QVERIFY(!window->chip()->geometry().intersects(window->popInButton()->geometry()));
+        for (auto *button : window->header()->findChildren<QAbstractButton *>())
+            if (button != window->chip() && button->isVisible())
+                QVERIFY(!window->chip()->geometry().intersects(button->geometry()));
+        window->setToolbarShown(true);
+        ui::IconButton *format = nullptr;
+        for (auto *button : window->header()->findChildren<ui::IconButton *>())
+            if (button->accessibleName() == "Formatting toolbar") format = button;
+        QVERIFY(format); QCOMPARE(format->toolTip(), QString("Hide formatting toolbar (Esc)"));
+        window->setToolbarShown(false);
+        QCOMPARE(format->toolTip(), QString("Show formatting toolbar"));
+        QCoreApplication::processEvents();
+        if (const auto out = qEnvironmentVariable("HN_SCREENSHOT_DIR"); !out.isEmpty())
+            QVERIFY(window->grab().save(out + QString("/sticky-%1-%2.png").arg(dark ? "dark" : "light").arg(width)));
     }
     void commandPaletteFitsTinyHostAndRethemesSearch() {
         auto theme = hn::theme::loadTheme("modernist", false); ui::setTheme(theme); hn::theme::applyTheme(theme);

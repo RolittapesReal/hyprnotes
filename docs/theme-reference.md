@@ -92,3 +92,5 @@ If a field is invalid, that field keeps its previous value while valid fields ar
 ## AnimationPolicy
 
 `hn::theme::AnimationPolicy{reduceMotion}.duration(ms)` returns `clamp(ms, 100, 150)`, or 0 when reduce motion is set.
+
+Note and settings-page transitions last 120 ms and stop when Reduce motion is enabled. Tooltips use the theme’s surface, text and border colours. The app and tray icon stay red and white across themes. Press F1 for Settings → Keys; fixed shortcuts and Markdown typing tips appear below the editable bindings.

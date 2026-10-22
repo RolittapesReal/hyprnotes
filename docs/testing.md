@@ -2,6 +2,14 @@
 
 **Status note (2026-10-22):** The scoped Part A functional closeout is complete. It covers Markdown list save/reopen behavior, Organizer pagination during index sync, focused regressions, and a bounded allocator replay. The broader hardening qualification is still deferred. Recorded performance and memory budget failures remain failures; the smaller closeout scope did not change them.
 
+## 0.2.2 UI update
+
+The October 22 native Release build reports `hyprnotes 0.2.2`. Selected checks across eight UI test executables passed, covering swatch fills, tooltips, note and settings transitions, sticky layout, filter clearing, the shared tray icon and Keys navigation. Five CLI/plugin executables also passed their selected version and binding checks. These runs recorded 79 QtTest entries passed, none failed or skipped; that count includes each executable’s setup and cleanup entries.
+
+The screenshot suite’s `states` and `screenshots` cases passed with private app data and refreshed the light and dark images used in these docs. All checks used isolated HOME, XDG and Hyprnotes storage. They exercised Qt’s offscreen platform, not the running desktop app.
+
+This was a focused UI and release-metadata check. The full suite, sanitizers and compositor matrix were not rerun for 0.2.2. The earlier results and limits below remain unchanged.
+
 ## Recorded Part A evidence
 
 - **0.2.1 release metadata:** the app and five affected CLI/plugin test executables rebuilt successfully. The app reports `hyprnotes 0.2.1`. Three runtime suites passed on the first run; two app suites initially failed because the sandbox blocked their local test sockets, then both passed with local socket access and private test data. No assertion or sanitizer check was changed to obtain these passes.

@@ -57,6 +57,10 @@ hyprnotes [--show-organizer | --new-note | --background]
 
 Running it again talks to the instance that is already open. The tray icon appears when a StatusNotifier host is available, such as Waybar with its `tray` module enabled. Optional Hyprland window rules and key binds are in `/usr/share/hyprnotes/hyprland/`; add them to your config if you want them.
 
+Press **F1** to open Settings → Keys. It lists app and plugin bindings, fixed shortcuts and Markdown typing tips. With the organizer’s note list or sidebar focused, **?** also opens Keys. Enable **Reduce motion** in Appearance to turn off transitions.
+
+The tray uses the same red-and-white app icon in light and dark mode. When a search has no matches, **Clear filters** returns to the full note list.
+
 Settings live in `~/.config/hyprnotes/`, see [docs/theme-reference.md](docs/theme-reference.md).
 
 ## Plugins
@@ -79,7 +83,7 @@ ctest --test-dir build
 
 ## Status
 
-Version 0.2.1, release in preparation. See the [release notes](CHANGELOG.md). The 0.2.1 work includes fixes for Markdown list save/reopen behavior and Organizer pagination during sync. Broader hardening qualification is deferred.
+Version 0.2.2, release in preparation. See the [release notes](CHANGELOG.md). The 0.2.2 update fixes note-colour swatches, matches tooltips to the menus, and adds short transitions between notes and settings pages. Sticky windows have roomier controls, and F1 opens Settings → Keys. Broader hardening qualification is deferred.
 
 Before the 0.2.1 version update, the full Release suite passed 88/88 and the matching ASan/LSan/UBSan run passed 87/88, with one unchanged load-time assertion failing and no sanitizer diagnostics. The final focused regression run passed all three targets. Numeric performance and memory failures remain recorded; reducing scope did not turn them into passes. Compositor checks come from one Arch/Hyprland setup and do not establish compatibility across machines. See the [testing notes](docs/testing.md) for evidence and limits, and the [live-test recipe](tests/live/README.md) for isolated compositor checks.
 

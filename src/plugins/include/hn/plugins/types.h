@@ -17,7 +17,7 @@ namespace hn::plugins {
 
 inline constexpr int kApiVersion = 1;     // the original API; plugins declaring "api": 1 see exactly this surface
 inline constexpr int kApiVersionMax = 2;  // newest API this app supports ("api": 2 adds notes.index, panels, completion, link handlers)
-inline constexpr const char *kAppVersion = "0.2.1";
+inline constexpr const char *kAppVersion = "0.2.2";
 
 // Caps from the design spec.
 inline constexpr qint64 kMaxArchiveBytes = 5 * 1024 * 1024;

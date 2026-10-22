@@ -42,7 +42,7 @@ StatusStrip::StatusStrip(AppController *c, QWidget *parent) : QWidget(parent), m
     m_chip->setObjectName("hnSourceBadge");
     m_hint = new QLabel(tr("F1 KEYS"), row);
     m_hint->setObjectName("hnShortcutHint");
-    m_hint->setToolTip(tr("Keyboard shortcuts (F1)"));
+    m_hint->setToolTip(tr("Settings → Keys (F1)"));
     auto *actions = new ui::ActionRow(m_content);
     m_actions = actions;
     m_actions->installEventFilter(this);

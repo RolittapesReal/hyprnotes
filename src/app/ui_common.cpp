@@ -119,23 +119,6 @@ QIcon appIcon() {
     return ic;
 }
 
-QIcon appTrayIcon(const hn::theme::Theme &theme) {
-    QIcon ic;
-    for (int px : {16, 20, 22, 24, 32, 48, 64, 128, 256}) {
-        QPixmap pm(px, px);
-        pm.fill(theme.surface);
-        QPainter p(&pm);
-        p.setRenderHint(QPainter::Antialiasing, false);
-        const auto snap = [px](qreal units) { return qRound(units * px / 16.0); };
-        const int bar = qMax(2, snap(2));
-        p.fillRect(QRect(snap(4), snap(4), snap(8), bar), theme.accent);
-        p.fillRect(QRect(snap(4), snap(7), snap(8), bar), theme.accent);
-        p.fillRect(QRect(snap(4), snap(10), snap(5), bar), theme.accent);
-        ic.addPixmap(pm);
-    }
-    return ic;
-}
-
 QIcon icon(const QString &name, const QColor &tint, int px) {
     return hn::theme::icon(name, tint.isValid() ? tint : g_theme.text, px);
 }
@@ -304,21 +287,30 @@ FadeOverlay::FadeOverlay(QWidget *target) : QWidget(target), m_target(target) {
     m_anim.setStartValue(255);
     m_anim.setEndValue(0);
     connect(&m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) { m_alpha = v.toInt(); update(); });
-    connect(&m_anim, &QVariantAnimation::finished, this, [this] { hide(); });
+    m_anim.setEasingCurve(QEasingCurve::OutCubic);
+    connect(&m_anim, &QVariantAnimation::finished, this, &FadeOverlay::cancel);
 }
 
 void FadeOverlay::cancel() {
     m_anim.stop();
     m_alpha = 0;
     hide();
+    m_previous = {};
 }
 
-void FadeOverlay::play() {
+QPixmap FadeOverlay::snapshot(QWidget *source) {
+    cancel();
+    if (animation().reduceMotion || !m_target->isVisible()) return {};
+    return (source ? source : m_target)->grab();
+}
+
+void FadeOverlay::play(const QPixmap &previous) {
     cancel();
     const int d = animation().duration(120);
     if (d == 0 || !m_target->isVisible()) return;
     setGeometry(m_target->rect());
     m_alpha = 255;
+    m_previous = previous;
     m_anim.setDuration(d);
     show();
     raise();
@@ -326,13 +318,21 @@ void FadeOverlay::play() {
 }
 
 bool FadeOverlay::eventFilter(QObject *o, QEvent *e) {
-    if (o == m_target && e->type() == QEvent::Resize) setGeometry(m_target->rect());
+    if (o == m_target && e->type() == QEvent::Resize) {
+        cancel();
+        setGeometry(m_target->rect());
+    }
     if (o == m_target && e->type() == QEvent::Hide) cancel();
     return false;
 }
 
 void FadeOverlay::paintEvent(QPaintEvent *) {
     QPainter p(this);
+    if (!m_previous.isNull()) {
+        p.setOpacity(m_alpha / 255.0);
+        p.drawPixmap(rect(), m_previous);
+        return;
+    }
     QColor c = theme().bg;
     c.setAlpha(m_alpha);
     p.fillRect(rect(), c);
@@ -346,7 +346,9 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
-        p.scale(width() / 176.0, height() / 112.0);
+        const qreal scale = qMin(width() / 176.0, height() / 112.0);
+        p.translate((width() - 176 * scale) / 2, (height() - 112 * scale) / 2);
+        p.scale(scale, scale);
         const auto &t = theme();
         p.setRenderHint(QPainter::Antialiasing);
         const QPen line(t.text, 2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
@@ -365,11 +367,13 @@ protected:
             p.fillRect(QRectF(112, 72, 24, 24), t.accent);
             break;
         case Art::Search:
-            p.setPen(line); p.setBrush(t.surface);
-            p.drawEllipse(QRectF(40, 16, 64, 64));
-            p.setPen(QPen(t.text, 6, Qt::SolidLine, Qt::SquareCap));
-            p.drawLine(QPointF(96, 68), QPointF(132, 100));
-            p.fillRect(QRectF(62, 38, 20, 20), t.accent);
+            p.setPen(QPen(t.muted, 2, Qt::SolidLine, Qt::RoundCap));
+            p.setBrush(t.surface);
+            p.drawEllipse(QRectF(57, 24, 44, 44));
+            p.drawLine(QPointF(95, 62), QPointF(116, 83));
+            p.setPen(QPen(t.border, 2, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(69, 42), QPointF(89, 42));
+            p.drawLine(QPointF(69, 50), QPointF(83, 50));
             break;
         case Art::Note:
             sq({48, 8, 80, 96}, t.surface, line);
@@ -466,7 +470,7 @@ int EmptyState::layoutContent(int contentW) {
     const int titleH = qMax(0, m_title->heightForWidth(w)), bodyH = qMax(0, m_body->heightForWidth(w));
     int textH = titleH + bodyH + 8;
     for (auto *b : {m_primary, m_secondary}) if (!b->isHidden()) textH += b->heightForWidth(w) + 8;
-    const int artH = qMax(0, qMin(112, height() - 2 * margin - textH - 16));
+    const int artH = qMax(0, qMin(m_art->art == Art::Search ? 80 : 112, height() - 2 * margin - textH - 16));
     m_art->setFixedSize(qMin(176, w), artH);
     // Once the artwork reaches zero, retain the full text/action height in the
     // scrollable content rather than placing the remaining controls off-pane.
@@ -558,6 +562,7 @@ void SwatchPopover::paintEvent(QPaintEvent *) {
     p.setPen(t.text);
     p.setFont(uiFont(11, QFont::DemiBold));
     p.drawText(QRect(kSwPad, 12, width() - 2 * kSwPad, 16), Qt::AlignVCenter | Qt::AlignRight, colorName(shown));
+    p.setBrush(Qt::NoBrush);
     for (int i = 0; i < 6; ++i) {
         const QRect r = swatch(i);
         p.fillRect(r, noteColor(i));

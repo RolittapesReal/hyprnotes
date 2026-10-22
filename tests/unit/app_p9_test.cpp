@@ -6,10 +6,14 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPointer>
 #include "ui_common.h"
+#include "settings_dialog.h"
+#include <QTabWidget>
+#include <QTableWidget>
 #include <QProcess>
 #include <csignal>
 #include <unistd.h>
@@ -194,26 +198,77 @@ private slots:
         QVERIFY(NoteListModel::kMaxRows == 500);
     }
 
-    // ---- polish: cheat sheet, colour popover ----
-    void question_mark_opens_cheat_sheet_and_escape_closes_it() {
-        Lib l; l.write("a.md", "# A\n");
+    void f1_opens_keys_settings_data() {
+        QTest::addColumn<bool>("sticky");
+        QTest::newRow("organizer") << false;
+        QTest::newRow("sticky") << true;
+    }
+    void f1_opens_keys_settings() {
+        QFETCH(bool, sticky);
+        Lib lib; lib.write("a.md", "# A\n");
+        AppController controller(lib.opts());
+        QWidget *host = nullptr;
+        if (sticky) { controller.openSticky("a.md"); host = controller.stickyOf("a.md"); }
+        else { controller.showOrganizer(); host = controller.organizer(); }
+        host->activateWindow(); QTRY_VERIFY(host->isActiveWindow());
+        QTest::keyClick(host, Qt::Key_F1);
+        auto *dialog = host->findChild<hn::app::SettingsDialog *>();
+        QVERIFY(dialog); QVERIFY(dialog->isVisible());
+        QCOMPARE(dialog->tabs()->tabText(dialog->tabs()->currentIndex()), QString("Keys"));
+        QVERIFY(!host->findChild<QWidget *>("hnSheet"));
+        controller.showSettings(host, 0);
+        controller.showShortcuts(host);
+        QCOMPARE(host->findChildren<hn::app::SettingsDialog *>().size(), 1);
+        QCOMPARE(dialog->tabs()->tabText(dialog->tabs()->currentIndex()), QString("Keys"));
+        dialog->close();
+    }
+    void question_mark_opens_keys_and_search_remains_text() {
+        Lib lib; lib.write("a.md", "# A\n");
+        AppController controller(lib.opts()); controller.showOrganizer();
+        auto *organizer = controller.organizer(); organizer->list()->setFocus();
+        QTest::keyClick(organizer->list(), Qt::Key_Question, Qt::ShiftModifier);
+        QPointer<hn::app::SettingsDialog> dialog = organizer->findChild<hn::app::SettingsDialog *>();
+        QVERIFY(dialog); QCOMPARE(dialog->tabs()->tabText(dialog->tabs()->currentIndex()), QString("Keys"));
+        QTest::keyClick(dialog, Qt::Key_Escape); QTRY_VERIFY(dialog.isNull());
+        organizer->searchEdit()->setFocus();
+        QTest::keyClick(organizer->searchEdit(), Qt::Key_Question, Qt::ShiftModifier);
+        QVERIFY(!organizer->findChild<hn::app::SettingsDialog *>());
+        QCOMPARE(organizer->searchEdit()->text(), QString("?"));
+    }
+
+    void swatch_popover_renders_note_colours_data() {
+        QTest::addColumn<bool>("dark");
+        QTest::addColumn<int>("current");
+        for (bool dark : {false, true})
+            for (int current = 0; current < 6; ++current)
+                QTest::newRow(qPrintable(QString("%1-current-%2").arg(dark ? "dark" : "light").arg(current)))
+                    << dark << current;
+    }
+
+    void swatch_popover_renders_note_colours() {
+        QFETCH(bool, dark);
+        QFETCH(int, current);
+        Lib l;
         AppController c(l.opts());
-        c.showOrganizer();
-        auto *o = c.organizer();
-        o->list()->setFocus();
-        QVERIFY(!hn::app::ui::ShortcutSheet::isOpen(o));
-        QTest::keyClick(o->list(), Qt::Key_Question, Qt::ShiftModifier);
-        QVERIFY(hn::app::ui::ShortcutSheet::isOpen(o));
-        auto *sheet = o->findChild<QWidget *>("hnSheet", Qt::FindDirectChildrenOnly);
-        QVERIFY(sheet && sheet->size() == o->size());
-        QVERIFY(!sheet->grab().toImage().isNull());
-        QTest::keyClick(sheet, Qt::Key_Escape);
-        QTRY_VERIFY(!hn::app::ui::ShortcutSheet::isOpen(o));
-        // typed "?" in the search field is text, never a shortcut
-        o->searchEdit()->setFocus();
-        QTest::keyClick(o->searchEdit(), Qt::Key_Question, Qt::ShiftModifier);
-        QVERIFY(!hn::app::ui::ShortcutSheet::isOpen(o));
-        QCOMPARE(o->searchEdit()->text(), QString("?"));
+        auto settings = c.settings();
+        settings.theme = "modernist";
+        settings.colorScheme = dark ? "dark" : "light";
+        c.applySettings(settings, c.prefs());
+        QWidget host;
+        auto *pop = new hn::app::ui::SwatchPopover(current, &host);
+        pop->popup(QPoint(10, 10));
+        QTRY_VERIFY(pop->isVisible());
+        const QImage image = pop->grab().toImage();
+        const QString out = qEnvironmentVariable("HN_SCREENSHOT_DIR");
+        if (!out.isEmpty()) {
+            QDir().mkpath(out);
+            QVERIFY(image.save(QString("%1/swatch-%2-current-%3.png").arg(out, dark ? "dark" : "light").arg(current)));
+        }
+        const qreal dpr = image.devicePixelRatio();
+        for (int i = 0; i < 6; ++i) {
+            const QPoint center(qRound((28 + 32 * i) * dpr), qRound(52 * dpr));
+            QCOMPARE(image.pixelColor(center), hn::app::ui::theme().noteAccent[i]);
+        }
     }
 
     void swatch_popover_is_keyboard_operable() {

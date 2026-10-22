@@ -8,6 +8,7 @@
 #include <QCache>
 #include <QListView>
 #include <QPointer>
+#include <QPixmap>
 #include <QTimer>
 #include <QWidget>
 
@@ -34,7 +35,8 @@ public:
 
     QString token() const { return m_token; }
     NoteSession *currentSession() const { return m_session; }
-    void attachSession(NoteSession *s);
+    QPixmap transitionSnapshot();
+    void attachSession(NoteSession *s, const QPixmap &previous = {});
     void detachSession();                       // editor ownership returns to the controller
     void noteReleased(const QString &rel);      // its sticky closed: drop a stale 'open elsewhere' panel
     void showElsewhere(const QString &rel);     // note is open in a sticky: show entry, offer focus / pop in
@@ -103,6 +105,7 @@ private:
     quint64 m_lastId = 0, m_rebaseRequestId = 0;
     int m_searches = 0, m_lastOffset = 0;
     bool m_syncing = false, m_titled = false, m_rebasePending = false;
+    bool m_emptyClearsFilters = false; // dispatch the action currently displayed, even while new results are pending
     int m_total = 0;
     QHBoxLayout *m_root = nullptr;
     QWidget *m_railCol = nullptr, *m_listCol = nullptr, *m_editorCol = nullptr, *m_railLine = nullptr;

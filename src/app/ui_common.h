@@ -8,6 +8,7 @@
 #include <QIcon>
 #include <QLabel>
 #include <QPushButton>
+#include <QPixmap>
 #include <QVariantAnimation>
 #include <QPointer>
 #include <QWidget>
@@ -34,7 +35,6 @@ ThemeNotifier *themeNotifier();
 void setReducedMotion(bool reduced);
 
 QIcon appIcon();
-QIcon appTrayIcon(const hn::theme::Theme &theme);
 QIcon icon(const QString &name, const QColor &tint = {}, int px = 16);
 QString chooseOpenFile(QWidget *parent, const QString &title, const QString &directory, const QString &filter);
 QString chooseSaveFile(QWidget *parent, const QString &title, const QString &fileName, const QString &filter);
@@ -106,13 +106,14 @@ private:
     QColor m_color;
 };
 
-// Interaction-only crossfade: an opaque-colour overlay whose alpha falls to 0, then hides itself.
-// No-op under reduced motion. Never animates document content.
+// Short, input-transparent reveal. Page switches can dissolve a snapshot of the previous view;
+// without a snapshot this reveals from the theme background. No-op under reduced motion.
 class FadeOverlay : public QWidget {
     Q_OBJECT
 public:
     explicit FadeOverlay(QWidget *target);
-    void play();
+    QPixmap snapshot(QWidget *source = nullptr);
+    void play(const QPixmap &previous = {});
     void cancel();
     bool running() const { return m_anim.state() == QAbstractAnimation::Running; }
 protected:
@@ -122,6 +123,7 @@ private:
     QVariantAnimation m_anim;
     QWidget *m_target;
     int m_alpha = 0;
+    QPixmap m_previous;
 };
 
 // Flat note-colour picker (six square swatches). Painted, keyboard operable (arrows, Enter, 1-6), closes on pick/Esc/click-away.
@@ -143,47 +145,6 @@ private:
     QRect swatch(int i) const;
     int at(const QPoint &p) const;
     int m_current, m_focus, m_hover = -1;
-};
-
-// Full-window flat keyboard cheat sheet (F1 or ? outside text fields). Painted, scrollable, Esc / click / F1 closes it.
-class ShortcutSheet : public QWidget {
-    Q_OBJECT
-public:
-    // `extra`: (label, key) rows shown under PLUGINS (plugin-defined default keys).
-    static void toggle(QWidget *window, const QMap<QString, QKeySequence> &bindings, const QList<QPair<QString, QKeySequence>> &extra = {});
-    static bool isOpen(QWidget *window);
-    struct Row { QString group, label; QStringList keys; };
-    const QList<Row> &rows() const { return m_rows; }
-    struct RowGeometry { QRect label; QList<QRect> keys; };
-    QList<RowGeometry> rowGeometries() const;
-    QRect titleRect() const { return m_titleRect; }
-    QRect closeHintRect() const { return m_closeRect; }
-    int scrollOffset() const { return m_scroll; }
-    int maximumScroll() const { return qMax(0, m_contentH - qMax(0, height() - m_contentTop - 8)); }
-    static ShortcutSheet *openOn(QWidget *window) { return window ? window->findChild<ShortcutSheet *>("hnSheet", Qt::FindDirectChildrenOnly) : nullptr; }
-protected:
-    void paintEvent(QPaintEvent *) override;
-    bool event(QEvent *e) override;
-    void keyPressEvent(QKeyEvent *) override;
-    void mousePressEvent(QMouseEvent *) override { close(); }
-    void wheelEvent(QWheelEvent *) override;
-    void resizeEvent(QResizeEvent *) override;
-    bool eventFilter(QObject *o, QEvent *e) override;
-private:
-    explicit ShortcutSheet(QWidget *window, const QList<Row> &rows);
-    void close();
-    void relayout();
-    void scrollTo(int offset);
-    int columnScroll(int x) const;
-    struct GroupGeometry { QString text; QRect rect; };
-    QList<RowGeometry> m_geometry;
-    QList<GroupGeometry> m_groups;
-    QRect m_titleRect, m_closeRect;
-    int m_contentTop = 0;
-    int m_columnHeight[2] = {0, 0};
-    QList<Row> m_rows;
-    QPointer<QWidget> m_prevFocus;
-    int m_scroll = 0, m_contentH = 0;
 };
 
 enum class Art { Stack, Search, Note, Stickies, Shapes };

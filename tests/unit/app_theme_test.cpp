@@ -1,5 +1,6 @@
 #include "app_test_util.h"
 #include "cli.h"
+#include "ui_common.h"
 #include "settings_dialog.h"
 #include <QComboBox>
 #include <QDragEnterEvent>
@@ -25,18 +26,27 @@ class ThemeAppTest : public QObject {
 private slots:
     void init() { qputenv("XDG_CONFIG_HOME", xdg.filePath("xdg").toUtf8()); QDir(xdg.filePath("xdg")).removeRecursively(); }
 
-    void trayIconTracksColorScheme() {
-        Lib l;
-        auto options = l.opts();
-        options.useTray = true;
-        AppController c(options);
-        QVERIFY(c.tray());
-        const QImage before = c.tray()->icon().pixmap(QSize(32, 32)).toImage();
-        auto settings = c.settings();
-        settings.colorScheme = settings.colorScheme == "dark" ? "light" : "dark";
-        c.applySettings(settings, c.prefs());
-        const QImage after = c.tray()->icon().pixmap(QSize(32, 32)).toImage();
-        QVERIFY2(before != after, "tray icon pixels should follow active color scheme");
+    void trayIconMatchesAppAcrossSchemes_data() {
+        QTest::addColumn<int>("size");
+        for (int size : {16, 22, 32, 64}) QTest::newRow(qPrintable(QString::number(size))) << size;
+    }
+    void trayIconMatchesAppAcrossSchemes() {
+        QFETCH(int, size);
+        Lib lib;
+        auto options = lib.opts(); options.useTray = true;
+        AppController controller(options);
+        QVERIFY(controller.tray());
+        const QImage expected = hn::app::ui::appIcon().pixmap(QSize(size, size)).toImage().convertToFormat(QImage::Format_ARGB32);
+        for (const auto &theme : {QString("modernist"), QString("nord")}) {
+            for (const auto &scheme : {QString("light"), QString("dark")}) {
+                auto settings = controller.settings(); settings.colorScheme = scheme; settings.theme = theme;
+                controller.applySettings(settings, controller.prefs());
+                const QImage actual = controller.tray()->icon().pixmap(QSize(size, size)).toImage().convertToFormat(QImage::Format_ARGB32);
+                if (const auto out = qEnvironmentVariable("HN_SCREENSHOT_DIR"); !out.isEmpty())
+                    QVERIFY(actual.save(out + QString("/tray-%1-%2-%3.png").arg(theme, scheme).arg(size)));
+                QCOMPARE(actual, expected);
+            }
+        }
     }
 
     void picker_lists_imports_applies_and_persists() {

@@ -131,6 +131,36 @@ private slots:
         QTRY_VERIFY(!dialog.isVisible());
     }
 
+    void keysIncludeFixedReferenceWithoutSavingItAsBindings() {
+        PolishProfile profile;
+        apptest::Lib lib; AppController controller(lib.opts());
+        SettingsDialog dialog(&controller);
+        const QMap<QString, QString> expected{
+            {"Open Keys settings", "F1"}, {"Rename note (organizer)", "F2"},
+            {"Hide toolbar", "Esc"}, {"Type a heading", "# + Space"},
+            {"Type a bulleted list", "- + Space"}, {"Type a task", "[ ] + Space"},
+            {"Type a quote", "> + Space"}};
+        QMap<QString, QString> actual;
+        auto *table = dialog.keysTable();
+        for (int row = 0; row < table->rowCount(); ++row) {
+            auto *name = table->item(row, 0);
+            if (!name->data(Qt::UserRole).toString().isEmpty()) continue;
+            QVERIFY(!table->cellWidget(row, 1));
+            QVERIFY(!(name->flags() & Qt::ItemIsEditable));
+            auto *key = table->item(row, 1); QVERIFY(key);
+            QVERIFY(!(key->flags() & Qt::ItemIsEditable));
+            actual.insert(name->text(), key->text());
+        }
+        QCOMPARE(actual, expected);
+        auto *editor = qobject_cast<QKeySequenceEdit *>(table->cellWidget(0, 1)); QVERIFY(editor);
+        editor->setKeySequence(QKeySequence("Ctrl+Alt+N"));
+        QVERIFY(QMetaObject::invokeMethod(editor, "editingFinished", Qt::DirectConnection));
+        QCOMPARE(controller.settings().keybindings.value("new-note"), QKeySequence("Ctrl+Alt+N"));
+        for (auto it = expected.cbegin(); it != expected.cend(); ++it)
+            QVERIFY(!controller.settings().keybindings.contains(it.key()));
+        QVERIFY(!controller.settings().keybindings.contains(QString()));
+    }
+
     void largeTextPagesAndKeysRemainReachable() {
         PolishProfile profile;
         apptest::Lib lib;
@@ -155,7 +185,19 @@ private slots:
             QVERIFY(!qobject_cast<QScrollArea *>(dialog.tabs()->widget(4)));
             for (int row = 0; row < table->rowCount(); ++row) {
                 auto *editor = qobject_cast<QKeySequenceEdit *>(table->cellWidget(row, 1));
-                QVERIFY(editor);
+                if (!editor) {
+                    QVERIFY(table->item(row, 0)->data(Qt::UserRole).toString().isEmpty());
+                    QVERIFY(!(table->item(row, 1)->flags() & Qt::ItemIsEditable));
+                    table->scrollToItem(table->item(row, 0));
+                    QTRY_VERIFY2(table->viewport()->rect().contains(table->visualItemRect(table->item(row, 0))),
+                        qPrintable(QString("px=%1 row=%2 label=%3 rect=%4,%5 %6x%7 viewport=%8x%9")
+                            .arg(px).arg(row).arg(table->item(row, 0)->text())
+                            .arg(table->visualItemRect(table->item(row, 0)).x()).arg(table->visualItemRect(table->item(row, 0)).y())
+                            .arg(table->visualItemRect(table->item(row, 0)).width()).arg(table->visualItemRect(table->item(row, 0)).height())
+                            .arg(table->viewport()->width()).arg(table->viewport()->height())));
+                    QTRY_VERIFY(table->viewport()->rect().contains(table->visualItemRect(table->item(row, 1))));
+                    continue;
+                }
                 QTRY_VERIFY(table->rowHeight(row) >= editor->sizeHint().height());
                 table->scrollToItem(table->item(row, 0));
                 QTRY_VERIFY2(table->viewport()->rect().contains(inWidget(editor, table->viewport())),

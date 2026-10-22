@@ -304,7 +304,7 @@ private slots:
         QCOMPARE(w->objectName(), w->token());
         QCOMPARE(w->minimumSize(), QSize(260, 180));
         QVERIFY(w->windowFlags() & Qt::FramelessWindowHint);
-        QCOMPARE(w->header()->height(), 28);
+        QCOMPARE(w->header()->height(), 32);
         QVERIFY(!c.quitting());
     }
 };

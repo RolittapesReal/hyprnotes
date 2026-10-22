@@ -29,6 +29,7 @@
 #include <QStyleOptionSpinBox>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <limits>
 #include <vector>
@@ -278,6 +279,41 @@ private slots:
             if (state.testFlag(QStyle::State_HasFocus))
                 QCOMPARE(image.pixelColor(image.width() / 2, 0), theme.text);
         }
+    }
+
+    void tooltipsMatchPopupSurfaces_data() {
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("light") << false;
+        QTest::newRow("dark") << true;
+    }
+
+    void tooltipsMatchPopupSurfaces() {
+        QFETCH(bool, dark);
+        const auto theme = hn::theme::loadTheme("modernist", dark);
+        hn::theme::applyTheme(theme);
+        QWidget host;
+        QPushButton button("New note", &host);
+        button.setToolTip("New note (Ctrl+N)");
+        host.resize(200, 100);
+        host.show();
+        QToolTip::showText(host.mapToGlobal(QPoint(20, 40)), button.toolTip(), &button);
+        QWidget *tooltip = nullptr;
+        for (auto *widget : QApplication::topLevelWidgets())
+            if (widget->windowType() == Qt::ToolTip && widget->isVisible()) tooltip = widget;
+        QVERIFY(tooltip);
+        const QImage image = tooltip->grab().toImage();
+        if (const auto out = qEnvironmentVariable("HN_SCREENSHOT_DIR"); !out.isEmpty()) {
+            QDir().mkpath(out);
+            QVERIFY(image.save(out + (dark ? "/tooltip-dark.png" : "/tooltip-light.png")));
+        }
+        const QColor fill = image.pixelColor(qRound(4 * image.devicePixelRatio()), image.height() / 2);
+        const QColor text = tooltip->palette().color(QPalette::WindowText);
+        QToolTip::hideText();
+        QTRY_VERIFY(!QToolTip::isVisible());
+        QCOMPARE(fill, theme.surface);
+        QCOMPARE(text, theme.text);
+        QCOMPARE(qApp->palette().color(QPalette::ToolTipBase), theme.surface);
+        QCOMPARE(qApp->palette().color(QPalette::ToolTipText), theme.text);
     }
 
     void roundedControlsKeepDocumentSurfacesSquare() {

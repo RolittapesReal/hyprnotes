@@ -35,6 +35,7 @@ public:
     QCheckBox *autostartBox() const { return m_autostart; }
     QCheckBox *motionBox() const { return m_motion; }
     static constexpr int kPluginsTab = 3;
+    static constexpr int kKeysTab = 4;
     PluginsPage *pluginsPage() const { return m_pluginsPage; }
     QTabWidget *tabs() const { return m_tabs; }
     void showTab(int i);

@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.2.2 — in preparation
+
+- Restore the coloured fills in the note-colour picker.
+- Match tooltips to the theme’s menu surface, text and border colours.
+- Dissolve the previous view over 120 ms when switching notes or settings pages. Navigation stays responsive; Reduce motion disables the transition.
+- Use one red-and-white app and tray icon in every theme and colour scheme.
+- Give sticky windows a 32 px header, shorter workspace labels, clearer formatting hints and a subtle active-window outline.
+- Simplify the No matches state and add Clear filters. Repeated clicks while results are loading keep clearing filters rather than creating a note.
+- Remove the separate shortcuts sheet. F1 opens Settings → Keys, which now also includes fixed shortcuts and Markdown typing tips. Plugin bindings remain editable there.
+
+Notes, settings formats and plugin API versions are unchanged. Version 0.2.2 has not been tagged or published as a release package. See [testing and validation](docs/testing.md) for the checks and their limits.
+
 ## 0.2.1 — in preparation
 
 - Fix Markdown import and export for lists, nested quotes, emphasis and whitespace. List structure now survives saving and reopening a note.

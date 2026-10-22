@@ -138,7 +138,7 @@ public:
     bool setThemeOverride(const QString &pluginId, const QString &token, const QString &value);   // session-only, validated
     QKeySequence paletteKey() const;                // user binding, else Ctrl+Shift+P
     QMap<QString, QKeySequence> effectiveBindings() const;   // settings + palette default (no plugin keys)
-    void showShortcuts(QWidget *window);            // cheat sheet incl. plugin keys
+    void showShortcuts(QWidget *window);            // Settings → Keys, including plugin bindings and typing tips
     void showPalette(QWidget *host, NoteSession *s);
     void populateToolsMenu(QMenu *menu, NoteSession *s);
 

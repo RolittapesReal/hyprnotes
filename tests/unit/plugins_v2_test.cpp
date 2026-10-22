@@ -63,9 +63,9 @@ private slots:
         QVERIFY(rig.mgr->consent("late-scan", {}));
         QVERIFY(rig.mgr->trust()->setEnabled("late-scan", true));
         QVERIFY(rig.mgr->scan());
-        QCOMPARE(rig.logsOf("late-scan"), QStringList{"started:0.2.1"});
+        QCOMPARE(rig.logsOf("late-scan"), QStringList{"started:0.2.2"});
         QVERIFY(rig.mgr->scan());
-        QCOMPARE(rig.logsOf("late-scan"), QStringList{"started:0.2.1"});
+        QCOMPARE(rig.logsOf("late-scan"), QStringList{"started:0.2.2"});
     }
     void disabledPluginSettingsSurviveCacheRewriteAndRescan() {
         Rig rig;

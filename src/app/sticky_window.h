@@ -1,5 +1,5 @@
 #pragma once
-// Frameless modernist sticky note: 28 px header (drag area), 6 px resize band, note-colour stripe,
+// Frameless modernist sticky note: 32 px header (drag area), 6 px resize band, note-colour stripe,
 // workspace chip, toolbar toggle, pop-in and close. Hosts a NoteSession's editor; never owns content.
 #include "hn/platform/window_identity.h"
 #include "hn/platform/window_placement.h"
@@ -20,7 +20,7 @@ namespace ui { class IconButton; class ChipButton; class FadeOverlay; }
 class StickyWindow : public QWidget {
     Q_OBJECT
 public:
-    static constexpr int kHeader = 28;
+    static constexpr int kHeader = 32;
     static constexpr int kEdge = 6;
     StickyWindow(AppController *c, NoteSession *s);
     ~StickyWindow() override;
@@ -45,6 +45,7 @@ public:
     PanelDock *openPanels();                                  // popup with the same panels as the organizer dock
 
 protected:
+    void changeEvent(QEvent *) override;
     void paintEvent(QPaintEvent *) override;
     void closeEvent(QCloseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
@@ -61,7 +62,7 @@ private:
     QPointer<NoteSession> m_session;
     hn::platform::WindowIdentity m_id;
     hn::platform::WorkspaceMode m_mode = hn::platform::WorkspaceMode::ThisWorkspace;
-    StickyHeader *m_header;
+    StickyHeader *m_header = nullptr;
     QWidget *m_slot, *m_toolbarHost;
     QVBoxLayout *m_slotLay, *m_toolbarLay;
     StatusStrip *m_status;

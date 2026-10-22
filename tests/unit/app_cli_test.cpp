@@ -69,7 +69,7 @@ private slots:
         QTemporaryDir d;
         QString out, err;
         QCOMPARE(run(d.path(), {"--version"}, &out), 0);
-        QVERIFY(out.startsWith("hyprnotes 0.2.1"));
+        QVERIFY(out.startsWith("hyprnotes 0.2.2"));
         QCOMPARE(run(d.path(), {"--help"}, &out), 0);
         QVERIFY(out.contains("--show-organizer"));
         QCOMPARE(run(d.path(), {"--nope"}, &out, &err), 2);

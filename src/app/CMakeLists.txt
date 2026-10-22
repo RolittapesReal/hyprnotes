@@ -7,7 +7,7 @@ foreach(dep core theme editor platform mods plugins)
 endforeach()
 
 add_library(hn_app STATIC
-  cli.cpp signal_bridge.cpp ui_common.cpp shortcut_sheet.cpp action_row.cpp note_state.cpp note_session.cpp editor_bridge.cpp tag_edit.cpp controller.cpp
+  cli.cpp signal_bridge.cpp ui_common.cpp action_row.cpp note_state.cpp note_session.cpp editor_bridge.cpp tag_edit.cpp controller.cpp
   note_list.cpp status_strip.cpp organizer_window.cpp sticky_window.cpp settings_dialog.cpp
   native_adapter.cpp plugin_bridges.cpp plugin_service.cpp consent_dialog.cpp command_palette.cpp plugins_page.cpp market_model.cpp market_page.cpp panel_dock.cpp editor_hooks.cpp link_rename.cpp
   cli.h signal_bridge.h policy.h ui_common.h action_row.h note_state.h note_session.h editor_bridge.h tag_edit.h controller.h
